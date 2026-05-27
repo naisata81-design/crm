@@ -1,0 +1,4 @@
+providers = ["node"]
+
+[phases.setup]
+nixPkgs = ["...", "nss", "xorg.libXdamage", "xorg.libX11", "xorg.libXcomposite", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "glib", "gtk3", "alsa-lib", "atk", "cups", "libdrm", "mesa", "pango", "cairo"]
