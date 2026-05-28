@@ -1734,8 +1734,21 @@ const waMessageHandler = async message => {
             const esLevantamiento = text.includes('levantamiento');
             const esCita = text.includes('cita') || text.includes('junta') || text.includes('reunion') || text.includes('reunión');
             const esTarea = text.includes('tarea') || text.includes('actividad') || text.includes('asignar');
+            const esAvance = text.includes('avance') || text.includes('reportar');
             
-            if (esLevantamiento || esCita) {
+            if (esAvance) {
+                const proyectosActivos = await CRMProyecto.find({ estado: { $in: ['Activo', 'Pausado'] } }).sort({ fechaInicio: -1 });
+                let proyList = [];
+                let pNum = 1;
+                proyectosActivos.forEach(p => { proyList.push({ num: pNum++, folio: p.folio, nombre: p.nombre, id: p._id.toString() }); });
+                s.ctx.proyList = proyList;
+                
+                let proysTxt = proyList.length > 0 ? proyList.map(p => `${p.num}. [${p.folio || 'S/F'}] ${p.nombre}`).join('\n') : 'No hay proyectos activos.';
+                
+                s.state = 'WAITING_AVANCE_PROYECTO';
+                await setSession(effectiveFrom, s);
+                await reply(`📊 *REPORTAR AVANCE*\n\n${proysTxt}\n\n¿A qué *PROYECTO* deseas reportarle avance?\n(Escribe el número)`);
+            } else if (esLevantamiento || esCita) {
                 s.ctx.type = esLevantamiento ? 'Levantamiento' : 'Junta';
                 s.ctx.isEvento = true;
                 s.state = 'WAITING_TAREA_DESC';
@@ -1747,7 +1760,136 @@ const waMessageHandler = async message => {
                 await setSession(effectiveFrom, s);
                 await reply(`🛠️ Vamos a asignar una *Nueva Tarea*.\n\n¿Cuál es la descripción o nombre de la actividad?`);
             } else {
-                await reply("🤖 ¡Hola! Soy NAIS desde tu CRM.\n\nPuedo ayudarte a:\n- Agendar *juntas*, *citas* o *levantamientos*\n- Asignar *tareas* al equipo\n\n¿Qué deseas hacer?");
+                await reply("🤖 ¡Hola! Soy NAIS desde tu CRM.\n\nPuedo ayudarte a:\n- Agendar *juntas*, *citas* o *levantamientos*\n- Asignar *tareas* al equipo\n- *Reportar avance* de un proyecto\n\n¿Qué deseas hacer?");
+            }
+        } else if (s.state === 'WAITING_AVANCE_PROYECTO') {
+            const num = parseInt(text.trim());
+            const proy = (s.ctx.proyList || []).find(p => p.num === num);
+            if (!proy) return reply(`⚠️ Número no válido. Por favor, escribe un número de la lista.`);
+            s.ctx.proyectoId = proy.id;
+            s.ctx.proyecto = proy.nombre;
+            
+            const tareas = await CRMActividad.find({ proyectoId: proy.id, estado: { $ne: 'Completada' } });
+            let tareasList = [];
+            let tNum = 1;
+            tareas.forEach(t => { tareasList.push({ num: tNum++, desc: t.descripcion, id: t._id.toString() }); });
+            s.ctx.tareasList = tareasList;
+            
+            if (tareasList.length > 0) {
+                let txt = tareasList.map(t => `${t.num}. ${t.desc}`).join('\n');
+                s.state = 'WAITING_AVANCE_TAREA';
+                await setSession(effectiveFrom, s);
+                await reply(`🛠️ *TAREAS DEL PROYECTO*\n\n${txt}\n\n¿A qué *TAREA* le reportarás avance?\n(Escribe el número, o "0" para reportar al proyecto en general sin especificar tarea)`);
+            } else {
+                s.ctx.tareaId = null;
+                s.state = 'WAITING_AVANCE_PCT_TAREA';
+                await setSession(effectiveFrom, s);
+                await reply(`No hay tareas pendientes en este proyecto.\n\n¿Cuál es el *Porcentaje de Avance* de tu actividad? (1-100)`);
+            }
+        } else if (s.state === 'WAITING_AVANCE_TAREA') {
+            const num = parseInt(text.trim());
+            if (num === 0) {
+                s.ctx.tareaId = null;
+                s.ctx.tareaDesc = 'General';
+            } else {
+                const t = (s.ctx.tareasList || []).find(x => x.num === num);
+                if (!t) return reply(`⚠️ Número no válido. Escribe un número de la lista o "0".`);
+                s.ctx.tareaId = t.id;
+                s.ctx.tareaDesc = t.desc;
+            }
+            s.state = 'WAITING_AVANCE_PCT_TAREA';
+            await setSession(effectiveFrom, s);
+            await reply(`📈 Tarea: ${s.ctx.tareaDesc || 'General'}\n\n¿Cuál es el *Porcentaje de Avance* de esta actividad? (Escribe un número del 1 al 100)`);
+        } else if (s.state === 'WAITING_AVANCE_PCT_TAREA') {
+            const num = parseInt(text.trim());
+            if (isNaN(num) || num < 0 || num > 100) return reply(`⚠️ Porcentaje inválido. Escribe un número del 1 al 100.`);
+            s.ctx.pctTarea = num;
+            s.state = 'WAITING_AVANCE_PCT_PROY';
+            await setSession(effectiveFrom, s);
+            await reply(`📈 Enterado (${num}%).\n\n¿Cuál es el nuevo *Porcentaje Global del Proyecto* aportado? (1-100)`);
+        } else if (s.state === 'WAITING_AVANCE_PCT_PROY') {
+            const num = parseInt(text.trim());
+            if (isNaN(num) || num < 0 || num > 100) return reply(`⚠️ Porcentaje inválido. Escribe un número del 1 al 100.`);
+            s.ctx.pctProy = num;
+            s.state = 'WAITING_AVANCE_DESC';
+            await setSession(effectiveFrom, s);
+            await reply(`📝 Enterado (${num}%).\n\nEscribe un *Comentario o Descripción* del trabajo que se realizó hoy:`);
+        } else if (s.state === 'WAITING_AVANCE_DESC') {
+            s.ctx.comentario = Body.trim();
+            s.ctx.fotos = [];
+            s.state = 'WAITING_AVANCE_FOTOS';
+            await setSession(effectiveFrom, s);
+            await reply(`📸 Comentario guardado.\n\nPor último, puedes enviar hasta *5 FOTOS* de evidencia ahora mismo.\n\n(Las fotos se procesarán una por una). Cuando hayas terminado de enviar fotos, o si no enviarás ninguna, escribe *"listo"*.`);
+        } else if (s.state === 'WAITING_AVANCE_FOTOS') {
+            const finishAvanceLocal = async () => {
+                try {
+                    const proj = await CRMProyecto.findById(s.ctx.proyectoId);
+                    if (!proj) throw new Error("Proyecto no encontrado");
+                    
+                    const user = await UserRef.findOne({ telefono: { $regex: effectiveFrom.split('@')[0] } });
+                    const empName = user ? `${user.nombre} ${user.apellido || ''}`.trim() : 'Trabajador WA';
+                    
+                    proj.avances.push({
+                        empleado: empName,
+                        porcentaje: s.ctx.pctTarea || 0,
+                        porcentajeProyecto: s.ctx.pctProy || 0,
+                        comentario: s.ctx.comentario,
+                        fotos: s.ctx.fotos || []
+                    });
+                    if (s.ctx.pctProy > 0) {
+                        proj.porcentajeAvance = s.ctx.pctProy;
+                    }
+                    await proj.save();
+                    
+                    if (s.ctx.tareaId) {
+                        await CRMActividad.findByIdAndUpdate(s.ctx.tareaId, {
+                            porcentajeAvance: s.ctx.pctTarea,
+                            avanceReportado: true,
+                            estado: s.ctx.pctTarea >= 100 ? 'Completada' : 'En Progreso'
+                        });
+                    }
+                    
+                    await reply(`✅ *AVANCE REPORTADO EXITOSAMENTE*\n\n🏗️ Proyecto: ${proj.nombre}\n📈 Tarea: ${s.ctx.pctTarea}% | Proyecto: ${s.ctx.pctProy}%\n📝 ${s.ctx.comentario}\n📸 Fotos: ${(s.ctx.fotos || []).length}\n\nEl panel operativo ha sido actualizado.`);
+                } catch(e) {
+                    console.error("Error finalizando avance WA:", e);
+                    await reply(`❌ Error al guardar el avance. Consulta al administrador.`);
+                }
+                await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+            };
+
+            if (message.hasMedia) {
+                try {
+                    const media = await message.downloadMedia();
+                    if (media && media.mimetype.startsWith('image/')) {
+                        const fs = require('fs');
+                        const path = require('path');
+                        const ext = media.mimetype.split('/')[1] || 'jpeg';
+                        const fileName = `wa_evidencia_${Date.now()}_${Math.floor(Math.random()*1000)}.${ext}`;
+                        const filePath = path.join(__dirname, 'public', 'archivos', fileName);
+                        fs.writeFileSync(filePath, media.data, 'base64');
+                        s.ctx.fotos = s.ctx.fotos || [];
+                        s.ctx.fotos.push(`archivos/${fileName}`);
+                        await setSession(effectiveFrom, s);
+                        
+                        if (s.ctx.fotos.length >= 5) {
+                            await reply(`✅ Límite de 5 fotos alcanzado. Procesando avance...`);
+                            await finishAvanceLocal();
+                        } else {
+                            // acknowledge receipt silently or minimally
+                            waLog.add(`✅ Foto recibida de WA para avance. (${s.ctx.fotos.length}/5)`);
+                        }
+                    } else {
+                        await reply(`⚠️ Por favor envía una imagen válida, o escribe "listo" para terminar.`);
+                    }
+                } catch(e) {
+                    console.error("Error descargando foto wa:", e);
+                    await reply(`❌ Error recibiendo la imagen.`);
+                }
+            } else if (text === 'listo' || text === 'terminar') {
+                await reply(`⏳ Procesando avance...`);
+                await finishAvanceLocal();
+            } else {
+                await reply(`⚠️ Por favor envía fotos de evidencia o escribe *"listo"* para finalizar el reporte.`);
             }
         } else if (s.state === 'WAITING_DATE') {
             s.ctx.dateStr = Body.trim();
