@@ -1710,22 +1710,23 @@ const waMessageHandler = async message => {
         const text = Body.trim().toLowerCase();
 
         // Cargar sesión desde MongoDB usando el chatId resuelto (no el LID crudo)
-        const s = await getSession(resolvedFrom);
-        // También verificar variante alternativa del chatId (52 vs 521)
-        let sFromAlt = null;
-        if (s.state === 'IDLE') {
-            const altFrom = resolvedFrom.startsWith('521') ? resolvedFrom.replace('521', '52') : resolvedFrom.replace(/^52/, '521');
-            sFromAlt = await getSession(altFrom);
-        }
-        // Si la sesión principal está IDLE pero la variante tiene estado activo, usarla
-        const sessionActiva = (s.state !== 'IDLE') ? s : (sFromAlt && sFromAlt.state !== 'IDLE' ? sFromAlt : s);
-        Object.assign(s, sessionActiva);
-        // Usar siempre resolvedFrom para guardar/actualizar sesiones (no el LID crudo)
         const effectiveFrom = resolvedFrom;
+        const altFrom = effectiveFrom.startsWith('521') ? effectiveFrom.replace('521', '52') : effectiveFrom.replace(/^52/, '521');
+        
+        const s = await getSession(effectiveFrom);
+        const sFromAlt = await getSession(altFrom);
+        
+        // Si la sesión principal está IDLE pero la variante tiene estado activo, migrar y limpiar la variante
+        if (s.state === 'IDLE' && sFromAlt && sFromAlt.state !== 'IDLE') {
+            Object.assign(s, sFromAlt);
+            await setSession(effectiveFrom, s);
+            await setSession(altFrom, { state: 'IDLE', ctx: {} });
+        }
         
         // Cancelación Global (más flexible)
         if (text.includes('cancelar') || text === 'cancela' || text === 'salir' || text === 'reiniciar' || text.includes('abortar')) {
             await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+            await setSession(altFrom, { state: 'IDLE', ctx: {} }); // Limpiar también la variante por seguridad
             await reply("🚫 *Operación cancelada.*\n\n¿En qué más te puedo ayudar?");
             return;
         }
@@ -2180,11 +2181,13 @@ const waMessageHandler = async message => {
                     } else {
                         const errData = await confirmRes.json().catch(() => ({}));
                         waLog.add(`⚠️ Confirm HTTP ${confirmRes.status}: ${JSON.stringify(errData).substring(0,80)}`);
-                        return reply(`⚠️ No se pudo confirmar: ${errData.error || 'Error desconocido'}. Intenta desde la app o contacta al admin.`);
+                        await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                        return reply(`⚠️ No se pudo confirmar: ${errData.error || 'La asignación ya no es válida'}. Se ha cancelado el proceso actual.`);
                     }
                 } catch(e) {
                     const cause = e.cause ? ` | causa: ${e.cause.message || e.cause}` : '';
                     waLog.addError(`Confirmando vehiculo via WA (txId=${s.ctx.txId} url=${s.ctx.mainApiUrl})`, new Error(e.message + cause));
+                    await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
                     return reply(`❌ Error de conexión al confirmar. Intenta desde la app o contacta al administrador.`);
                 }
             } else if (b === '2' || b === 'rechazar' || b === 'rechazo' || b === 'no') {
@@ -2207,7 +2210,7 @@ const waMessageHandler = async message => {
                 await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
                 return reply(`❌ *ASIGNACIÓN RECHAZADA*\n\nHas rechazado la asignación del vehículo. El administrador ha sido notificado.`);
             } else {
-                return reply(`⚠️ Respuesta no reconocida.\n\nEscribe *ACEPTAR* para confirmar la recepción o *RECHAZAR* para declinar.`);
+                return reply(`⚠️ Respuesta no reconocida.\n\nEscribe *ACEPTAR* para confirmar la recepción o *RECHAZAR* para declinar. Si deseas salir de esto, escribe *CANCELAR*.`);
             }
         }
 
