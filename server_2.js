@@ -31,31 +31,27 @@ const waLog = {
 let waClient = null;
 let waReady = false;
 
-// Función global para enviar mensajes (Blindada contra fallos silenciosos)
+// Función global para enviar mensajes
 async function sendWhatsAppMessage(to, body) {
-    if (!waReady || !waClient) {
+    if (!waReady) {
         waLog.add('⚠️ Intentó enviar mensaje pero WhatsApp no está listo');
-        return; // Detenemos aquí
+        await new Promise(r => setTimeout(r, 3000));
     }
     try {
-        // Limpiar el número
+        // Limpiar el número (quitar espacios, guiones, etc)
         let cleanPhone = to.replace(/\D/g, '');
+        // Si el número tiene 10 dígitos (formato México local), agregar 521
         if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
+        // Si tiene 12 dígitos y empieza con 52 pero sin el 1 de celular, agregarlo (opcional, WhatsApp a veces acepta 52)
         if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
         
-        // 🟢 EL TRUCO: Preguntarle a WhatsApp el ID exacto
-        const registered = await waClient.getNumberId(cleanPhone);
-        
-        if (!registered) {
-            waLog.add(`❌ WA rechazó el envío: El número ${cleanPhone} no existe en sus registros.`);
-            return;
+        const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+        if (waClient) {
+            await waClient.sendMessage(chatId, body);
+            waLog.add(`✅ Notificación enviada a ${chatId}`);
+        } else {
+            waLog.add(`❌ waClient no está definido. No se pudo enviar a ${chatId}`);
         }
-        
-        // _serialized nos da el formato exacto que WA prefiere (52 vs 521)
-        const chatId = registered._serialized; 
-        
-        await waClient.sendMessage(chatId, body);
-        waLog.add(`✅ Notificación enviada a ${chatId}`);
     } catch (e) {
         waLog.ultimoError = `[Enviando a ${to}]: ${e.message}`;
         waLog.add(`❌ Error notificando a ${to}: ${e.message.substring(0,50)}`);
@@ -1473,14 +1469,8 @@ Responde con una de estas palabras:
                         let cleanPhone = u.telefono.replace(/\D/g, '');
                         if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
                         if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
-                        
-                        // 🟢 Validar antes de enviar la foto
-                        const registered = await waClient.getNumberId(cleanPhone);
-                        if (registered) {
-                            await waClient.sendMessage(registered._serialized, mediaObj, { caption: `📸 Foto del equipamiento del vehículo *${modelo}* (${placas})` });
-                        } else {
-                            waLog.add(`⚠️ No se envió foto, número no registrado: ${cleanPhone}`);
-                        }
+                        const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+                        await waClient.sendMessage(chatId, mediaObj, { caption: `📸 Foto del equipamiento del vehículo *${modelo}* (${placas})` });
                     }
                 } catch (photoErr) {
                     waLog.add(`⚠️ No se pudo enviar foto equipo: ${photoErr.message?.substring(0,60)}`);
@@ -1588,25 +1578,8 @@ app.get('/whatsapp/reset', async (req, res) => {
 
 const waMessageHandler = async message => {
     try {
-        let From = message.from; 
+        const From = message.from; 
         const Body = message.body;
-
-        // 🟢 INICIO DE LA SOLUCIÓN PARA @lid
-        // Si WhatsApp nos manda un ID interno en lugar del número...
-        if (From && From.includes('@lid')) {
-            try {
-                // Le pedimos a la librería que busque el perfil real de esta persona
-                const contact = await message.getContact();
-                if (contact && contact.number) {
-                    // Reemplazamos el @lid fantasma por el número de teléfono real
-                    From = `${contact.number}@c.us`; 
-                    waLog.add(`🔄 @lid convertido exitosamente a: ${From}`);
-                }
-            } catch (err) {
-                waLog.add(`⚠️ Error al convertir @lid: ${err.message}`);
-            }
-        }
-        // 🟢 FIN DE LA SOLUCIÓN
 
         if (!Body || !From || From.includes('@g.us') || From === 'status@broadcast') return; // ignorar grupos y estados
 
@@ -1632,10 +1605,6 @@ const waMessageHandler = async message => {
         };
 
         const text = Body.trim().toLowerCase();
-
-        // 1. Normalizar el número entrante para que coincida exactamente con cómo se guardó
-        const normalizedFrom = await getChatIdFromPhone(From);
-        From = normalizedFrom; // Actualizamos From para usar siempre el número normalizado
 
         // Cargar sesión desde MongoDB (persiste entre reinicios)
         const s = await getSession(From);
