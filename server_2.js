@@ -271,6 +271,7 @@ const CRMEventoSchema = new mongoose.Schema({
     fechaFin: Date,
     participantes: [String],
     vehiculosAsignados: [String],
+    recordatorioEnviado: { type: Boolean, default: false },
     fechaCreacion: { type: Date, default: Date.now }
 });
 const CRMEvento = mongoose.model('CRMEvento', CRMEventoSchema);
@@ -1877,6 +1878,55 @@ if (mongoose.connection.readyState === 1) {
 
 // Favicon (evitar 404 en el log)
 app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// --- Recordatorios automáticos de eventos ---
+setInterval(async () => {
+    try {
+        if (!waReady || waStatus !== 'CONECTADO') return;
+        
+        const ahora = new Date();
+        const enHoraYMedia = new Date(ahora.getTime() + 90 * 60 * 1000);
+        
+        // Buscar eventos (SOLO Juntas y Levantamientos) que comiencen en los próximos 90 minutos
+        const eventos = await CRMEvento.find({
+            tipo: { $in: ['Junta', 'Levantamiento'] },
+            fechaInicio: { $gt: ahora, $lte: enHoraYMedia },
+            recordatorioEnviado: { $ne: true }
+        });
+        
+        if (eventos.length === 0) return;
+        
+        const allUsers = await UserRef.find();
+        const findPhone = (name) => {
+            const queryName = name.trim().toLowerCase().replace(/\s+/g, ' ');
+            const u = allUsers.find(x => {
+                const soloNombre = (x.nombre || '').trim().toLowerCase();
+                const soloApellido = (x.apellido || '').trim().toLowerCase();
+                const fullName = `${soloNombre} ${soloApellido}`.trim().replace(/\s+/g, ' ');
+                if (!fullName) return false;
+                return fullName === queryName || fullName.includes(queryName) || queryName.includes(fullName);
+            });
+            return u && u.telefono ? u.telefono : null;
+        };
+
+        for (const ev of eventos) {
+            const timeStr = ev.fechaInicio.toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City', hour: '2-digit', minute:'2-digit' });
+            
+            for (const participante of (ev.participantes || [])) {
+                const tel = findPhone(participante);
+                if (tel) {
+                    const msg = `⏰ *RECORDATORIO DE ${ev.tipo.toUpperCase()}*\n\nHola ${participante}, te recordamos que tienes programado: *${ev.titulo}*.\n\n🕒 Inicia a las: ${timeStr}\n📝 Detalles: ${ev.descripcion}\n\nPor favor, prepárate con anticipación.`;
+                    await sendWhatsAppMessage(tel, msg).catch(e => console.error("Error enviando recordatorio WA:", e));
+                }
+            }
+            
+            ev.recordatorioEnviado = true;
+            await ev.save();
+        }
+    } catch(err) {
+        console.error('Error en loop de recordatorios:', err);
+    }
+}, 60000); // Revisar cada minuto
 
 // Start Server
 app.listen(PORT, '0.0.0.0', () => {
