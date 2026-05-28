@@ -242,6 +242,7 @@ const CRMProyectoSchema = new mongoose.Schema({
         fecha: { type: Date, default: Date.now },
         empleado: String,
         porcentaje: Number,
+        porcentajeProyecto: Number,
         comentario: String,
         fotos: [String]
     }],
@@ -795,7 +796,7 @@ app.post('/api/proyectos/:id/facturas', upload.single('archivo'), async (req, re
 app.post('/api/proyectos/:id/avance', upload.array('fotos', 5), async (req, res) => {
     try {
         const { id } = req.params;
-        const { empleado, porcentaje, comentario, actividadId } = req.body;
+        const { empleado, porcentajeTarea, porcentajeProyecto, comentario, actividadId } = req.body;
         
         let fotosUrls = [];
         if (req.files && req.files.length > 0) {
@@ -826,18 +827,21 @@ app.post('/api/proyectos/:id/avance', upload.array('fotos', 5), async (req, res)
             }
         }
 
-        const pct = parseInt(porcentaje, 10) || 0;
+        const pctTarea = parseInt(porcentajeTarea, 10) || 0;
+        const pctProyecto = parseInt(porcentajeProyecto, 10) || 0;
         
         proj.avances.push({
             empleado,
-            porcentaje: pct,
+            porcentaje: pctTarea,
+            porcentajeProyecto: pctProyecto,
             comentario,
             fotos: fotosUrls
         });
         
-        // Sumar el porcentaje reportado al total del proyecto (máximo 100)
-        // Eliminado: el avance ahora lo gestiona manualmente el administrador.
-        // proj.porcentajeAvance = Math.min(100, (proj.porcentajeAvance || 0) + pct);
+        // Actualizar porcentaje del proyecto si se proporcionó
+        if (pctProyecto > 0) {
+            proj.porcentajeAvance = pctProyecto;
+        }
         
         await proj.save();
         
