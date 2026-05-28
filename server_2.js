@@ -31,27 +31,31 @@ const waLog = {
 let waClient = null;
 let waReady = false;
 
-// Función global para enviar mensajes
+// Función global para enviar mensajes (Blindada contra fallos silenciosos)
 async function sendWhatsAppMessage(to, body) {
-    if (!waReady) {
+    if (!waReady || !waClient) {
         waLog.add('⚠️ Intentó enviar mensaje pero WhatsApp no está listo');
-        await new Promise(r => setTimeout(r, 3000));
+        return; // Detenemos aquí
     }
     try {
-        // Limpiar el número (quitar espacios, guiones, etc)
+        // Limpiar el número
         let cleanPhone = to.replace(/\D/g, '');
-        // Si el número tiene 10 dígitos (formato México local), agregar 521
         if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
-        // Si tiene 12 dígitos y empieza con 52 pero sin el 1 de celular, agregarlo (opcional, WhatsApp a veces acepta 52)
         if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
         
-        const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
-        if (waClient) {
-            await waClient.sendMessage(chatId, body);
-            waLog.add(`✅ Notificación enviada a ${chatId}`);
-        } else {
-            waLog.add(`❌ waClient no está definido. No se pudo enviar a ${chatId}`);
+        // 🟢 EL TRUCO: Preguntarle a WhatsApp el ID exacto
+        const registered = await waClient.getNumberId(cleanPhone);
+        
+        if (!registered) {
+            waLog.add(`❌ WA rechazó el envío: El número ${cleanPhone} no existe en sus registros.`);
+            return;
         }
+        
+        // _serialized nos da el formato exacto que WA prefiere (52 vs 521)
+        const chatId = registered._serialized; 
+        
+        await waClient.sendMessage(chatId, body);
+        waLog.add(`✅ Notificación enviada a ${chatId}`);
     } catch (e) {
         waLog.ultimoError = `[Enviando a ${to}]: ${e.message}`;
         waLog.add(`❌ Error notificando a ${to}: ${e.message.substring(0,50)}`);
@@ -1469,8 +1473,14 @@ Responde con una de estas palabras:
                         let cleanPhone = u.telefono.replace(/\D/g, '');
                         if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
                         if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
-                        const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
-                        await waClient.sendMessage(chatId, mediaObj, { caption: `📸 Foto del equipamiento del vehículo *${modelo}* (${placas})` });
+                        
+                        // 🟢 Validar antes de enviar la foto
+                        const registered = await waClient.getNumberId(cleanPhone);
+                        if (registered) {
+                            await waClient.sendMessage(registered._serialized, mediaObj, { caption: `📸 Foto del equipamiento del vehículo *${modelo}* (${placas})` });
+                        } else {
+                            waLog.add(`⚠️ No se envió foto, número no registrado: ${cleanPhone}`);
+                        }
                     }
                 } catch (photoErr) {
                     waLog.add(`⚠️ No se pudo enviar foto equipo: ${photoErr.message?.substring(0,60)}`);
