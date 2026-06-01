@@ -107,8 +107,21 @@ async function sendWhatsAppMessage(to, body) {
         // Si tiene 12 dígitos y empieza con 52 pero sin el 1 de celular, agregarlo (opcional, WhatsApp a veces acepta 52)
         if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
         
-        const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+        let chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
         if (waClient) {
+            // Validar y obtener el ID real desde los servidores de WhatsApp para evitar bloqueos
+            try {
+                const registeredUser = await waClient.getNumberId(cleanPhone);
+                if (registeredUser && registeredUser._serialized) {
+                    chatId = registeredUser._serialized;
+                } else {
+                    waLog.add(`⚠️ Número no válido o no registrado en WA: ${cleanPhone}`);
+                    return; // Abortar envío pacíficamente
+                }
+            } catch (err) {
+                waLog.add(`⚠️ Error resolviendo ID de WA, intentando fallback...`);
+            }
+
             // Promise.race para evitar que await waClient.sendMessage cuelgue el hilo permanentemente si Chrome está bloqueado
             await Promise.race([
                 waClient.sendMessage(chatId, body),
@@ -1562,8 +1575,8 @@ const lidToChatId = new Map(); // lid@lid  →  521XXXXXXXXXX@c.us
 let waCurrentQR = null;
 let waStatus = 'DESCONECTADO';
 
-// Usamos estrictamente el directorio temporal del sistema operativo
-const WA_DATA_PATH = require('path').join(require('os').tmpdir(), 'wa_auth');
+// Usamos una variable (let) para poder cambiar la ruta si es necesario limpiar bloqueos
+let WA_DATA_PATH = require('path').join(require('os').tmpdir(), 'wa_auth');
 try { fs.mkdirSync(WA_DATA_PATH, { recursive: true }); } catch(e) { 
     console.error('Error creando directorio temporal:', e); 
 }
@@ -1854,9 +1867,12 @@ app.get('/whatsapp/session-check', async (req, res) => {
 app.get('/whatsapp/reset', async (req, res) => {
     try {
         if (waClient) {
-            // Se manda a destruir en background para evitar que congele la respuesta HTTP
-            waClient.logout().catch(() => {});
-            waClient.destroy().catch(() => {});
+            waLog.add('🔄 Destruyendo cliente para evitar sesiones corruptas...');
+            // Esperar explícitamente a que se destruya para que RemoteAuth no guarde backups zombie
+            await Promise.race([
+                waClient.destroy(),
+                new Promise(resolve => setTimeout(resolve, 5000))
+            ]).catch(() => {});
             waClient = null;
         }
         
@@ -1876,10 +1892,12 @@ app.get('/whatsapp/reset', async (req, res) => {
             await mongoose.connection.db.collection('whatsapp-nais-crm.chunks').drop();
         } catch(e) { /* Ignorar si no existen */ }
 
-        // Forzar borrado de carpeta local temporal
+        // Forzar borrado de carpeta local temporal cambiando de ruta para evitar conflictos
         try {
             const fs = require('fs');
-            fs.rmSync(WA_DATA_PATH, { recursive: true, force: true });
+            try { fs.rmSync(WA_DATA_PATH, { recursive: true, force: true }); } catch(e) {}
+            // Nueva ruta!
+            WA_DATA_PATH = require('path').join(require('os').tmpdir(), 'wa_auth_' + Date.now());
             fs.mkdirSync(WA_DATA_PATH, { recursive: true });
         } catch(e) {}
 
