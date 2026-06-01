@@ -93,33 +93,55 @@ process.on('unhandledRejection', (reason) => {
 let waClient = null;
 let waReady = false;
 
-// Función global para enviar mensajes
-async function sendWhatsAppMessage(to, body) {
-    if (!waReady || !waClient) {
-        waLog.add('⚠️ Intentó enviar mensaje pero WhatsApp no está listo');
-        throw new Error('WhatsApp no está listo');
-    }
-    try {
-        // Limpiar el número (quitar espacios, guiones, etc)
-        let cleanPhone = to.replace(/\D/g, '');
-        // Si el número tiene 10 dígitos (formato México local), agregar 521
-        if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
-        // Si tiene 12 dígitos y empieza con 52 pero sin el 1 de celular, agregarlo (opcional, WhatsApp a veces acepta 52)
-        if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
+// ==========================================
+// SISTEMA DE COLA PARA MENSAJES WA
+// Previene que peticiones HTTP concurrentes saturen Puppeteer
+// ==========================================
+const waMessageQueue = [];
+let waIsProcessingQueue = false;
+
+async function processWaQueue() {
+    if (waIsProcessingQueue) return;
+    waIsProcessingQueue = true;
+    
+    while (waMessageQueue.length > 0) {
+        const { to, body, resolve, reject } = waMessageQueue.shift();
         
-        const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
-        if (waClient) {
-            await waClient.sendMessage(chatId, body);
-            waLog.add(`✅ Notificación enviada a ${chatId}`);
-            // Pausa de 1.5 segundos para evitar colapsar Chrome con envíos múltiples
-            await new Promise(resolve => setTimeout(resolve, 1500));
-        } else {
-            waLog.add(`❌ waClient no está definido. No se pudo enviar a ${chatId}`);
+        try {
+            let cleanPhone = to.replace(/\D/g, '');
+            if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
+            if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
+            const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+            
+            if (waClient && waReady) {
+                await waClient.sendMessage(chatId, body);
+                waLog.add(`✅ Notificación enviada a ${chatId}`);
+                // Pausa estricta de 2 segundos entre cada mensaje de la cola
+                await new Promise(r => setTimeout(r, 2000));
+                resolve(true);
+            } else {
+                waLog.add(`❌ WhatsApp no listo. No se pudo enviar a ${chatId}`);
+                reject(new Error('WhatsApp no está listo'));
+            }
+        } catch (e) {
+            waLog.ultimoError = `[Enviando a ${to}]: ${e.message}`;
+            waLog.add(`❌ Error notificando a ${to}: ${e.message.substring(0,50)}`);
+            reject(e);
         }
-    } catch (e) {
-        waLog.ultimoError = `[Enviando a ${to}]: ${e.message}`;
-        waLog.add(`❌ Error notificando a ${to}: ${e.message.substring(0,50)}`);
     }
+    waIsProcessingQueue = false;
+}
+
+// Función global enmascarada para usar la cola
+function sendWhatsAppMessage(to, body) {
+    if (!waReady || !waClient) {
+        waLog.add('⚠️ Intentó encolar mensaje pero WhatsApp no está listo');
+        return Promise.reject(new Error('WhatsApp no está listo'));
+    }
+    return new Promise((resolve, reject) => {
+        waMessageQueue.push({ to, body, resolve, reject });
+        processWaQueue();
+    });
 }
 const express = require('express');
 const cors = require('cors');
