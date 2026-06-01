@@ -111,6 +111,8 @@ async function sendWhatsAppMessage(to, body) {
         if (waClient) {
             await waClient.sendMessage(chatId, body);
             waLog.add(`✅ Notificación enviada a ${chatId}`);
+            // Pausa de 1.5 segundos para evitar colapsar Chrome con envíos múltiples
+            await new Promise(resolve => setTimeout(resolve, 1500));
         } else {
             waLog.add(`❌ waClient no está definido. No se pudo enviar a ${chatId}`);
         }
@@ -1854,6 +1856,11 @@ app.get('/whatsapp/reset', async (req, res) => {
         waInitializing = false;
 
         // Forzar borrado de la colección de RemoteAuth en MongoDB (GridFS)
+        try {
+            await mongoose.connection.db.collection('whatsapp-RemoteAuth-nais-crm.files').drop();
+            await mongoose.connection.db.collection('whatsapp-RemoteAuth-nais-crm.chunks').drop();
+        } catch(e) { /* Ignorar si no existen */ }
+        
         try {
             await mongoose.connection.db.collection('whatsapp-nais-crm.files').drop();
             await mongoose.connection.db.collection('whatsapp-nais-crm.chunks').drop();
