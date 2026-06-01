@@ -93,55 +93,35 @@ process.on('unhandledRejection', (reason) => {
 let waClient = null;
 let waReady = false;
 
-// ==========================================
-// SISTEMA DE COLA PARA MENSAJES WA
-// Previene que peticiones HTTP concurrentes saturen Puppeteer
-// ==========================================
-const waMessageQueue = [];
-let waIsProcessingQueue = false;
-
-async function processWaQueue() {
-    if (waIsProcessingQueue) return;
-    waIsProcessingQueue = true;
-    
-    while (waMessageQueue.length > 0) {
-        const { to, body, resolve, reject } = waMessageQueue.shift();
-        
-        try {
-            let cleanPhone = to.replace(/\D/g, '');
-            if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
-            if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
-            const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
-            
-            if (waClient && waReady) {
-                await waClient.sendMessage(chatId, body);
-                waLog.add(`✅ Notificación enviada a ${chatId}`);
-                // Pausa estricta de 2 segundos entre cada mensaje de la cola
-                await new Promise(r => setTimeout(r, 2000));
-                resolve(true);
-            } else {
-                waLog.add(`❌ WhatsApp no listo. No se pudo enviar a ${chatId}`);
-                reject(new Error('WhatsApp no está listo'));
-            }
-        } catch (e) {
-            waLog.ultimoError = `[Enviando a ${to}]: ${e.message}`;
-            waLog.add(`❌ Error notificando a ${to}: ${e.message.substring(0,50)}`);
-            reject(e);
-        }
-    }
-    waIsProcessingQueue = false;
-}
-
-// Función global enmascarada para usar la cola
-function sendWhatsAppMessage(to, body) {
+// Función global para enviar mensajes
+async function sendWhatsAppMessage(to, body) {
     if (!waReady || !waClient) {
-        waLog.add('⚠️ Intentó encolar mensaje pero WhatsApp no está listo');
-        return Promise.reject(new Error('WhatsApp no está listo'));
+        waLog.add('⚠️ Intentó enviar mensaje pero WhatsApp no está listo');
+        throw new Error('WhatsApp no está listo');
     }
-    return new Promise((resolve, reject) => {
-        waMessageQueue.push({ to, body, resolve, reject });
-        processWaQueue();
-    });
+    try {
+        // Limpiar el número (quitar espacios, guiones, etc)
+        let cleanPhone = to.replace(/\D/g, '');
+        // Si el número tiene 10 dígitos (formato México local), agregar 521
+        if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
+        // Si tiene 12 dígitos y empieza con 52 pero sin el 1 de celular, agregarlo (opcional, WhatsApp a veces acepta 52)
+        if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
+        
+        const chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+        if (waClient) {
+            // Promise.race para evitar que await waClient.sendMessage cuelgue el hilo permanentemente si Chrome está bloqueado
+            await Promise.race([
+                waClient.sendMessage(chatId, body),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout de WhatsApp Web (15s)')), 15000))
+            ]);
+            waLog.add(`✅ Notificación enviada a ${chatId}`);
+        } else {
+            waLog.add(`❌ waClient no está definido. No se pudo enviar a ${chatId}`);
+        }
+    } catch (e) {
+        waLog.ultimoError = `[Enviando a ${to}]: ${e.message}`;
+        waLog.add(`❌ Error notificando a ${to}: ${e.message.substring(0,50)}`);
+    }
 }
 const express = require('express');
 const cors = require('cors');
@@ -1677,6 +1657,14 @@ const initWhatsApp = () => {
             waClient = null;
             initWhatsApp();
         }, 20000);
+    });
+
+    waClient.on('change_state', state => {
+        waLog.add(`⚠️ Estado de WhatsApp Web cambió a: ${state}`);
+        if (state === 'CONFLICT' || state === 'UNLAUNCHED' || state === 'UNPAIRED') {
+            waStatus = 'DESCONECTADO';
+            waReady = false;
+        }
     });
 
 // Endpoint para ver el QR como imagen desde el navegador
