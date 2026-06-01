@@ -268,7 +268,7 @@ const CRMProyectoSchema = new mongoose.Schema({
     residenteId: String, // Encargado
     trabajadoresAsignados: [String],
     vehiculosAsignados: [String],
-    estado: { type: String, enum: ['Activo', 'Pausado', 'Terminado', 'Cancelado'], default: 'Activo' },
+    estado: { type: String, enum: ['Activo', 'Pausado', 'Terminado', 'Cancelado', 'Terminada', 'Cerrada'], default: 'Activo' },
     fechaInicio: { type: Date, default: Date.now },
     fechaFin: Date,
     // Finanzas
@@ -695,6 +695,13 @@ app.put('/api/proyectos/:id', async (req, res) => {
                         });
                     }
                 }
+            }
+
+            // Tercera Validación: El porcentaje de avance del proyecto debe ser 100%
+            if (proyecto.porcentajeAvance !== 100) {
+                return res.status(422).json({
+                    error: `No se puede cerrar el proyecto. El porcentaje de avance actual es del ${proyecto.porcentajeAvance || 0}%. Debe estar al 100% para poder finalizarlo.`
+                });
             }
         }
 
@@ -2166,14 +2173,20 @@ const waMessageHandler = async message => {
                 try {
                     const media = await message.downloadMedia();
                     if (media && media.mimetype.startsWith('image/')) {
-                        const fs = require('fs');
-                        const path = require('path');
                         const ext = media.mimetype.split('/')[1] || 'jpeg';
                         const fileName = `wa_evidencia_${Date.now()}_${Math.floor(Math.random()*1000)}.${ext}`;
-                        const filePath = path.join(__dirname, 'public', 'archivos', fileName);
-                        fs.writeFileSync(filePath, media.data, 'base64');
+                        
+                        // Guardar en MongoDB (CRMArchivo) en lugar de disco local (efímero)
+                        const archivo = new CRMArchivo({
+                            nombre: fileName,
+                            contentType: media.mimetype,
+                            datos: media.data, // ya viene en base64 desde whatsapp-web.js
+                            tamanio: Buffer.from(media.data, 'base64').length
+                        });
+                        const saved = await archivo.save();
+                        
                         s.ctx.fotos = s.ctx.fotos || [];
-                        s.ctx.fotos.push(`archivos/${fileName}`);
+                        s.ctx.fotos.push(`/api/archivos/${saved._id}`);
                         await setSession(effectiveFrom, s);
                         
                         if (s.ctx.fotos.length >= 5) {
