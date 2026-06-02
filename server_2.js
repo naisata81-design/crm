@@ -143,6 +143,26 @@ async function sendWhatsAppMessage(to, body) {
         waLog.ultimoError = `[Enviando a ${to}]${eCode}: ${eMsg}`;
         waLog.add(`❌ Error notificando a ${to}${eCode}: ${eMsg}${eStack}`);
         waLog.addError(`sendWhatsAppMessage(${to})`, e);
+
+        // Si el error es el 'getChat' undefined, el cliente está en estado zombie.
+        // Marcarlo como no listo para forzar reconexion en el próximo intento.
+        if (eMsg.includes('getChat') || eMsg.includes('Execution context was destroyed') || eMsg.includes('Session closed')) {
+            waLog.add('⚠️ Cliente WhatsApp en estado zombie detectado. Reiniciando bot automáticamente...');
+            waReady = false;
+            waStatus = 'DESCONECTADO';
+            
+            // Forzar reinicio del cliente
+            setTimeout(async () => {
+                try {
+                    if (waClient) {
+                        await waClient.destroy();
+                        waClient = null;
+                    }
+                } catch (_) {}
+                // initWhatsApp() se encarga de re-crear la sesión
+                initWhatsApp();
+            }, 3000);
+        }
     }
 }
 const express = require('express');
@@ -1666,9 +1686,15 @@ const initWhatsApp = () => {
         waInitializing = false;
         waCurrentQR = null;
         waStatus = 'CONECTADO';
-        waReady = true;
         waLog.ultimaActividad = new Date();
-        waLog.add('✅ Bot conectado y listo');
+        waLog.add('✅ Bot conectado — esperando 5s para estabilizar chats...');
+        // Delay de estabilización: whatsapp-web.js dispara 'ready' antes de que
+        // Puppeteer termine de hidratar los objetos de chat en memoria.
+        // Enviar mensajes antes de ese tiempo causa: "Cannot read properties of undefined (reading 'getChat')"
+        setTimeout(() => {
+            waReady = true;
+            waLog.add('✅ Bot listo para enviar mensajes');
+        }, 5000);
     });
 
     waClient.on('remote_session_saved', () => {
