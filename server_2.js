@@ -877,6 +877,34 @@ app.post('/api/proyectos/:id/facturas', upload.single('archivo'), async (req, re
     }
 });
 
+// Eliminar una factura de un proyecto
+app.delete('/api/proyectos/:id/facturas/:facturaId', async (req, res) => {
+    try {
+        const { id, facturaId } = req.params;
+        const proj = await CRMProyecto.findById(id);
+        if (!proj) return res.status(404).json({ error: "Proyecto no encontrado" });
+        
+        const factura = proj.facturas.id(facturaId);
+        if (!factura) return res.status(404).json({ error: "Factura no encontrada" });
+        
+        // Eliminar el archivo asociado si existe
+        if (factura.archivoUrl) {
+            const archivoId = factura.archivoUrl.split('/').pop();
+            try {
+                await CRMArchivo.findByIdAndDelete(archivoId);
+            } catch(e) { console.error("Error eliminando archivo de factura:", e); }
+        }
+        
+        // Remover factura del arreglo
+        proj.facturas.pull(facturaId);
+        await proj.save();
+        
+        res.json({ success: true, message: 'Factura eliminada', facturas: proj.facturas });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/proyectos/:id/avance', upload.array('fotos', 5), async (req, res) => {
     try {
         const { id } = req.params;
