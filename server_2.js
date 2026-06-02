@@ -119,7 +119,12 @@ async function sendWhatsAppMessage(to, body) {
                     return; // Abortar envío pacíficamente
                 }
             } catch (err) {
-                waLog.add(`⚠️ Error resolviendo ID de WA, intentando fallback...`);
+                const errMsg = err && err.message ? err.message : String(err);
+                const errCode = err && err.code ? ` [code: ${err.code}]` : '';
+                const errStack = err && err.stack ? '\n' + err.stack.split('\n').slice(1, 4).join(' | ') : '';
+                waLog.add(`⚠️ Error resolviendo ID de WA para ${cleanPhone}${errCode}: ${errMsg}${errStack}`);
+                waLog.addError(`getNumberId(${cleanPhone})`, err);
+                // Continúa con el chatId construido manualmente como fallback
             }
 
             // Promise.race para evitar que await waClient.sendMessage cuelgue el hilo permanentemente si Chrome está bloqueado
@@ -132,8 +137,12 @@ async function sendWhatsAppMessage(to, body) {
             waLog.add(`❌ waClient no está definido. No se pudo enviar a ${chatId}`);
         }
     } catch (e) {
-        waLog.ultimoError = `[Enviando a ${to}]: ${e.message}`;
-        waLog.add(`❌ Error notificando a ${to}: ${e.message.substring(0,50)}`);
+        const eMsg = e && e.message ? e.message : String(e);
+        const eCode = e && e.code ? ` [code: ${e.code}]` : '';
+        const eStack = e && e.stack ? '\n' + e.stack.split('\n').slice(1, 4).join(' | ') : '';
+        waLog.ultimoError = `[Enviando a ${to}]${eCode}: ${eMsg}`;
+        waLog.add(`❌ Error notificando a ${to}${eCode}: ${eMsg}${eStack}`);
+        waLog.addError(`sendWhatsAppMessage(${to})`, e);
     }
 }
 const express = require('express');
