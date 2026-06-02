@@ -1296,7 +1296,11 @@ app.post('/api/actividades', async (req, res) => {
             let label = data.destinoSugeridoCRMText;
             if (!label || label === '') label = data.descripcion || 'Tarea de CRM';
             for (const vId of data.vehiculosAsignados) {
-                await VehicleRef.findByIdAndUpdate(vId, { destinoSugeridoCRM: label });
+                await VehicleRef.findByIdAndUpdate(vId, { 
+                    destinoSugeridoCRM: label,
+                    crmActividadId: newAct._id.toString(),
+                    crmProyectoId: newAct.proyectoId || null
+                });
             }
         }
 
@@ -1407,13 +1411,44 @@ app.put('/api/actividades/:id', async (req, res) => {
             data.fechaVencimiento = data.fechaVencimiento + 'T12:00:00.000Z';
         }
         
+        // Respaldar la actividad original para ver qué cambió
+        const oldAct = await CRMActividad.findById(id);
+        const oldVehiculos = oldAct ? (oldAct.vehiculosAsignados || []) : [];
+
         const updatedAct = await CRMActividad.findByIdAndUpdate(id, data, { returnDocument: 'after' });
         if (!updatedAct) return res.status(404).json({ error: 'Actividad no encontrada' });
         
-        if (data.vehiculosAsignados && data.vehiculosAsignados.length > 0) {
-            let label = data.destinoSugeridoCRMText || data.descripcion || 'Tarea de CRM';
-            for (const vId of data.vehiculosAsignados) {
-                await VehicleRef.findByIdAndUpdate(vId, { destinoSugeridoCRM: label });
+        const newVehiculos = updatedAct.vehiculosAsignados || [];
+
+        // Soltar vehículos que ya no están asignados
+        const vehiculosSoltados = oldVehiculos.filter(v => !newVehiculos.includes(v));
+        for (const vId of vehiculosSoltados) {
+            await VehicleRef.findByIdAndUpdate(vId, { 
+                $unset: { destinoSugeridoCRM: 1, crmActividadId: 1, crmProyectoId: 1 } 
+            });
+            // Si tiene proyecto, quitar del proyecto
+            if (updatedAct.proyectoId) {
+                await CRMProyecto.findByIdAndUpdate(updatedAct.proyectoId, {
+                    $pull: { vehiculosAsignados: vId }
+                });
+            }
+        }
+
+        // Asignar los nuevos vehículos
+        if (newVehiculos.length > 0) {
+            let label = data.destinoSugeridoCRMText || updatedAct.descripcion || 'Tarea de CRM';
+            for (const vId of newVehiculos) {
+                await VehicleRef.findByIdAndUpdate(vId, { 
+                    destinoSugeridoCRM: label,
+                    crmActividadId: updatedAct._id.toString(),
+                    crmProyectoId: updatedAct.proyectoId || null
+                });
+                // Si tiene proyecto, agregar al proyecto
+                if (updatedAct.proyectoId) {
+                    await CRMProyecto.findByIdAndUpdate(updatedAct.proyectoId, {
+                        $addToSet: { vehiculosAsignados: vId }
+                    });
+                }
             }
         }
         res.json({ message: 'Actividad actualizada con éxito', data: updatedAct });
@@ -1428,6 +1463,17 @@ app.put('/api/actividades/:id/estado', async (req, res) => {
         if (comentarioCierre) updateData.comentarioCierre = comentarioCierre;
         const updatedAct = await CRMActividad.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
         if (!updatedAct) return res.status(404).json({ error: 'Actividad no encontrada' });
+
+        // Si se completó o canceló, liberar los vehículos en Tracking
+        if (['Completada', 'Cancelada'].includes(estado)) {
+            if (updatedAct.vehiculosAsignados && updatedAct.vehiculosAsignados.length > 0) {
+                for (const vId of updatedAct.vehiculosAsignados) {
+                    await VehicleRef.findByIdAndUpdate(vId, { 
+                        $unset: { destinoSugeridoCRM: 1, crmActividadId: 1, crmProyectoId: 1 } 
+                    });
+                }
+            }
+        }
         res.json({ message: 'Estado actualizado', data: updatedAct });
     } catch(err) { res.status(500).json({ error: err.message }); }
 });
