@@ -227,7 +227,7 @@ const VehicleTransactionRefSchema = new mongoose.Schema({
 }, { collection: 'vehicletransactions' });
 const VehicleRefSchema = new mongoose.Schema({
     _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
-    placas: String, modelo: String, marca: String, estado: String, destinoSugeridoCRM: String
+    placas: String, modelo: String, marca: String, estado: String, destinoSugeridoCRM: String, crmActividadId: String, crmProyectoId: String
 }, { collection: 'vehicles' });
 const InvTransactionRefSchema = new mongoose.Schema({
     _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
