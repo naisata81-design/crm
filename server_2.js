@@ -382,11 +382,11 @@ const CRMAjustes = mongoose.model('CRMAjustes', CRMAjustesSchema);
 async function getNextFolioNumber() {
     const ajustes = await CRMAjustes.findOne({ tipo: 'general' });
     const folioInicio = ajustes?.folioInicio || 1;
-    // Buscar el mayor número de folio existente con formato C-NNN
-    const cots = await CRMCotizacion.find({ folio: { $regex: /^C-\d+$/ } }).select('folio');
+    // Buscar el mayor número de folio existente con formato C1, C2... o legacy C-NNN
+    const cots = await CRMCotizacion.find({ folio: { $regex: /^C\d+$|^C-\d+$/ } }).select('folio');
     let maxNum = folioInicio - 1;
     cots.forEach(c => {
-        const num = parseInt(c.folio.replace('C-', ''), 10);
+        const num = parseInt(c.folio.replace('C-', '').replace('C', ''), 10);
         if (!isNaN(num) && num > maxNum) maxNum = num;
     });
     return Math.max(maxNum + 1, folioInicio);
@@ -502,7 +502,7 @@ app.post('/api/cotizaciones/asignar-folios-todos', async (req, res) => {
         let count = 0;
         for (const cot of sinFolio) {
             const num = await getNextFolioNumber();
-            cot.folio = `C-${String(num).padStart(3, '0')}`;
+            cot.folio = `C${num}`;
             await cot.save();
             count++;
         }
@@ -538,7 +538,7 @@ app.post('/api/cotizaciones', async (req, res) => {
             let folioGenerado;
             while (intentos < 5) {
                 const num = await getNextFolioNumber();
-                folioGenerado = `C-${String(num).padStart(3, '0')}`;
+                folioGenerado = `C${num}`;
                 const existe = await CRMCotizacion.findOne({ folio: folioGenerado });
                 if (!existe) break; // folio disponible
                 intentos++;
@@ -642,7 +642,7 @@ app.post('/api/proyectos', async (req, res) => {
         const data = req.body;
         const count = await CRMProyecto.countDocuments();
         
-        let folioFinal = `P-${String(count + 1).padStart(3, '0')}`;
+        let folioFinal = `P${count + 1}`;
         
         // Asignar Folio heredado si existe
         if (data.cotizacionId) {
