@@ -1465,7 +1465,7 @@ app.post('/api/actividades', async (req, res) => {
             }
 
             const fechaTxt = data.fechaVencimiento ? new Date(data.fechaVencimiento).toISOString().split('T')[0] : 'No definida';
-            const mensajeBase = `📝 Tarea: ${data.descripcion}\n📅 Fecha: ${fechaTxt}\n🕒 Horario: ${data.horaInicio || 'No definido'} a ${data.horaFin || 'No definido'}\n🏗️ Proyecto: ${proyectoNombre}\n🚗 Vehículo(s): ${vehiculosNombres}${proyectoLinks}\n\n⚠️ Por favor responde con la palabra *"Enterado"* para confirmar de recibido.`;
+            const mensajeBase = `📝 Tarea: ${data.descripcion}\n📅 Fecha: ${fechaTxt}\n🕒 Horario: ${data.horaInicio || 'No definido'} a ${data.horaFin || 'No definido'}\n🏗️ Proyecto: ${proyectoNombre}\n🚗 Vehículo(s): ${vehiculosNombres}${proyectoLinks}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
 
             for (const enc of encargadosArr) {
                 const telEncargado = findPhone(enc);
@@ -1475,6 +1475,15 @@ app.post('/api/actividades', async (req, res) => {
                 if (telEncargado) {
                     const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Tú eres el Encargado)* 🚨\n\n${mensajeBase}\n\n👥 Te acompañan: ${acompanantesTxt}`;
                     try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado' }); } catch(e) { console.error('Error WA encargado:', e); }
+                    // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
+                    try {
+                        const chatIdEnc = phoneToWaChatId(telEncargado);
+                        const altChatIdEnc = chatIdEnc.startsWith('521') ? chatIdEnc.replace('521','52') : chatIdEnc.replace(/^52/, '521');
+                        const encSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: enc } };
+                        await enqueueSession(chatIdEnc, encSessionData);
+                        await enqueueSession(altChatIdEnc, encSessionData);
+                        waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para encargado: ${chatIdEnc}`);
+                    } catch(eQ) { console.error('Error encolando tarea encargado:', eQ); }
                 }
             }
 
@@ -1486,6 +1495,15 @@ app.post('/api/actividades', async (req, res) => {
                 if (telAc) {
                     const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Vas como Acompañante)* 🔔\n\n👤 Encargado principal: ${encargadosTxt || 'Ninguno'}\n\n${mensajeBase}`;
                     try { await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante' }); } catch(e) { console.error('Error WA acompañante:', e); }
+                    // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
+                    try {
+                        const chatIdAc = phoneToWaChatId(telAc);
+                        const altChatIdAc = chatIdAc.startsWith('521') ? chatIdAc.replace('521','52') : chatIdAc.replace(/^52/, '521');
+                        const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: ac } };
+                        await enqueueSession(chatIdAc, acSessionData);
+                        await enqueueSession(altChatIdAc, acSessionData);
+                        waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para acompañante: ${chatIdAc}`);
+                    } catch(eQ) { console.error('Error encolando tarea acompañante:', eQ); }
                 }
             }
 
@@ -1892,6 +1910,15 @@ try { fs.mkdirSync(WA_DATA_PATH, { recursive: true }); } catch(e) {
 let waInitializing = false;
 
 
+// Helper GLOBAL para convertir teléfono a formato chatId de WhatsApp
+// Definida FUERA de initWhatsApp para que sea accesible desde endpoints de API
+function phoneToWaChatId(phone) {
+    let cleanPhone = (phone || '').replace(/\D/g, '');
+    if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
+    if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
+    return cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+}
+
 const initWhatsApp = () => {
     if (waInitializing) {
         waLog.add('⚠️ Ya hay un init en progreso, ignorando llamada duplicada...');
@@ -1996,10 +2023,7 @@ const initWhatsApp = () => {
 // Endpoint para ver el QR como imagen desde el navegador
 // Helper para convertir telefono a formato WA
 async function getChatIdFromPhone(phone) {
-    let cleanPhone = phone.replace(/\D/g, '');
-    if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
-    if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
-    return cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+    return phoneToWaChatId(phone);
 }
 
 // Endpoint interactivo para la asignación de vehículos — Mensaje mejorado con foto y términos
@@ -3152,8 +3176,9 @@ const waMessageHandler = async message => {
                         body: JSON.stringify({ firma: 'whatsapp-confirmation' })
                     });
                     if (confirmRes.ok) {
-                        await resolveSession(effectiveFrom, altFrom, reply);
-                        return reply(`✅ *VEHÍCULO ACEPTADO*\n\n¡Perfecto! La asignación quedó confirmada. Ya puedes disponer del vehículo.\n\n🚗 ¡Buen viaje y maneja con precaución!`);
+                        await reply(`✅ *VEHÍCULO ACEPTADO*\n\n¡Perfecto! La asignación quedó confirmada. Ya puedes disponer del vehículo.\n\n🚗 ¡Buen viaje y maneja con precaución!`);
+                        // Resolver sesión DESPUES del mensaje (para que llegue en orden correcto)
+                        setTimeout(async () => { await resolveSession(effectiveFrom, altFrom, reply); }, 1200);
                     } else {
                         const errData = await confirmRes.json().catch(() => ({}));
                         waLog.add(`⚠️ Confirm HTTP ${confirmRes.status}: ${JSON.stringify(errData).substring(0,80)}`);
@@ -3183,8 +3208,9 @@ const waMessageHandler = async message => {
                     const cause = e.cause ? ` | causa: ${e.cause.message || e.cause}` : '';
                     waLog.addError(`Rechazando vehiculo via WA (txId=${s.ctx.txId} url=${s.ctx.mainApiUrl})`, new Error(e.message + cause));
                 }
-                await resolveSession(effectiveFrom, altFrom, reply);
-                return reply(`❌ *ASIGNACIÓN RECHAZADA*\n\nHas rechazado la asignación del vehículo. El administrador ha sido notificado.`);
+                await reply(`❌ *ASIGNACIÓN RECHAZADA*\n\nHas rechazado la asignación del vehículo. El administrador ha sido notificado.`);
+                setTimeout(async () => { await resolveSession(effectiveFrom, altFrom, reply); }, 1200);
+                return;
             } else {
                 return reply(`⚠️ Respuesta no reconocida.\n\nEscribe *ACEPTAR* para confirmar la recepción o *RECHAZAR* para declinar. Si deseas salir de esto, escribe *CANCELAR*.`);
             }
@@ -3211,12 +3237,14 @@ const waMessageHandler = async message => {
 
             if (b === 'aceptar' || b === 'acepto' || b === '1' || b === 'si' || b === 'sí') {
                 await notifyJonathan(`✅ *CONFIRMACIÓN DE TAREA*\n\n*${nombreTrabajador}* ha *ACEPTADO* la siguiente tarea:\n\n📋 "${tareaDesc}"`);
-                await resolveSession(effectiveFrom, altFrom, reply);
-                return reply(`✅ ¡Órale! Confirmado tu participación. ¡Mucho éxito en la tarea!`);
+                await reply(`✅ ¡Órale! Confirmado tu participación. ¡Mucho éxito en la tarea!`);
+                setTimeout(async () => { await resolveSession(effectiveFrom, altFrom, reply); }, 1200);
+                return;
             } else if (b === 'rechazar' || b === 'rechazo' || b === '2' || b === 'no') {
                 await notifyJonathan(`❌ *TAREA RECHAZADA*\n\n*${nombreTrabajador}* ha *RECHAZADO* la siguiente tarea:\n\n📋 "${tareaDesc}"\n\nSe requiere reasignación.`);
-                await resolveSession(effectiveFrom, altFrom, reply);
-                return reply(`❌ Enterado, declinación registrada. El administrador ha sido notificado.`);
+                await reply(`❌ Enterado, declinación registrada. El administrador ha sido notificado.`);
+                setTimeout(async () => { await resolveSession(effectiveFrom, altFrom, reply); }, 1200);
+                return;
             } else {
                 return reply(`⚠️ No entendí eso. Responde con *ACEPTAR* para confirmar o *RECHAZAR* si no puedes. Escribe *CANCELAR* para salir.`);
             }
