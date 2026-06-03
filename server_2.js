@@ -3041,15 +3041,29 @@ const waMessageHandler = async message => {
 
                 const telEncargado = findPhone(s.ctx.encargado);
                 if (telEncargado) {
-                    const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Encargado)* 🚨\n\n📋 Tarea: ${s.ctx.desc}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}\n👥 Te acompañan: ${s.ctx.acompanantes.join(', ') || 'Nadie'}\n🚗 Vehículo(s): ${s.ctx.vehiculosTxt}\n🏗️ Proyecto/Cliente: ${s.ctx.proyecto || 'No vinculado'}`;
-                    await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'confirmacion_vehiculo' });
+                    const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Encargado)* 🚨\n\n📋 Tarea: ${s.ctx.desc}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}\n👥 Te acompañan: ${s.ctx.acompanantes.join(', ') || 'Nadie'}\n🚗 Vehículo(s): ${s.ctx.vehiculosTxt}\n🏗️ Proyecto/Cliente: ${s.ctx.proyecto || 'No vinculado'}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
+                    await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado' });
+                    // Guardar sesión WAITING_TASK_CONFIRM para el encargado
+                    const chatIdEnc = await getChatIdFromPhone(telEncargado);
+                    const altChatIdEnc = chatIdEnc.startsWith('521') ? chatIdEnc.replace('521','52') : chatIdEnc.replace('52','521');
+                    const taskSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: s.ctx.encargado } };
+                    await setSession(chatIdEnc, taskSessionData);
+                    await setSession(altChatIdEnc, taskSessionData);
+                    waLog.add(`📋 Sesión WAITING_TASK_CONFIRM guardada para encargado: ${chatIdEnc}`);
                 }
                 
                 for (let ac of s.ctx.acompanantes) {
                     const telAc = findPhone(ac);
                     if (telAc) {
-                        const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Acompañante)* 🔔\n\n📋 Tarea: ${s.ctx.desc}\n👤 Encargado: ${s.ctx.encargado}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}`;
-                        await sendWhatsAppMessage(telAc, msgAc, { tipo: 'confirmacion_vehiculo_acompanante' });
+                        const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Acompañante)* 🔔\n\n📋 Tarea: ${s.ctx.desc}\n👤 Encargado: ${s.ctx.encargado}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
+                        await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante' });
+                        // Guardar sesión WAITING_TASK_CONFIRM para el acompañante
+                        const chatIdAc = await getChatIdFromPhone(telAc);
+                        const altChatIdAc = chatIdAc.startsWith('521') ? chatIdAc.replace('521','52') : chatIdAc.replace('52','521');
+                        const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: ac } };
+                        await setSession(chatIdAc, acSessionData);
+                        await setSession(altChatIdAc, acSessionData);
+                        waLog.add(`📋 Sesión WAITING_TASK_CONFIRM guardada para acompañante: ${chatIdAc}`);
                     }
                 }
                 
@@ -3112,6 +3126,40 @@ const waMessageHandler = async message => {
                 return reply(`❌ *ASIGNACIÓN RECHAZADA*\n\nHas rechazado la asignación del vehículo. El administrador ha sido notificado.`);
             } else {
                 return reply(`⚠️ Respuesta no reconocida.\n\nEscribe *ACEPTAR* para confirmar la recepción o *RECHAZAR* para declinar. Si deseas salir de esto, escribe *CANCELAR*.`);
+            }
+        } else if (s.state === 'WAITING_TASK_CONFIRM') {
+            const b = text.trim().toLowerCase();
+            const tareaDesc = s.ctx.tareaDesc || 'Sin descripción';
+            const nombreTrabajador = s.ctx.nombreTrabajador || 'Un trabajador';
+
+            // Buscar teléfono de Jonathan para notificarle
+            const notifyJonathan = async (msgJonathan) => {
+                try {
+                    const allUsersJ = await UserRef.find();
+                    const jonathan = allUsersJ.find(x => x.nombre && x.nombre.toLowerCase().includes('jonathan'));
+                    if (jonathan && jonathan.telefono) {
+                        await sendWhatsAppMessage(jonathan.telefono, msgJonathan);
+                        waLog.add(`📲 Jonathan notificado sobre confirmación de tarea de ${nombreTrabajador}`);
+                    } else {
+                        waLog.add(`⚠️ No se encontró a Jonathan en la base de datos para notificar.`);
+                    }
+                } catch(e) {
+                    waLog.add(`❌ Error notificando a Jonathan: ${e.message}`);
+                }
+            };
+
+            if (b === 'aceptar' || b === 'acepto' || b === '1' || b === 'si' || b === 'sí') {
+                await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                await setSession(altFrom, { state: 'IDLE', ctx: {} });
+                await notifyJonathan(`✅ *CONFIRMACIÓN DE TAREA*\n\n*${nombreTrabajador}* ha *ACEPTADO* la siguiente tarea:\n\n📋 "${tareaDesc}"`);
+                return reply(`✅ ¡Órale! Confirmado tu participación. ¡Mucho éxito en la tarea!`);
+            } else if (b === 'rechazar' || b === 'rechazo' || b === '2' || b === 'no') {
+                await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                await setSession(altFrom, { state: 'IDLE', ctx: {} });
+                await notifyJonathan(`❌ *TAREA RECHAZADA*\n\n*${nombreTrabajador}* ha *RECHAZADO* la siguiente tarea:\n\n📋 "${tareaDesc}"\n\nSe requiere reasignación.`);
+                return reply(`❌ Enterado, declinación registrada. El administrador ha sido notificado.`);
+            } else {
+                return reply(`⚠️ No entendí eso. Responde con *ACEPTAR* para confirmar o *RECHAZAR* si no puedes. Escribe *CANCELAR* para salir.`);
             }
         }
 
