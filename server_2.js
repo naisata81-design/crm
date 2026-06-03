@@ -1207,6 +1207,51 @@ app.get('/api/empleados/mis-tareas-hoy', async (req, res) => {
     }
 });
 
+async function notificarFlotilla(actividad, nuevosVehiculosIds) {
+    try {
+        if (!nuevosVehiculosIds || nuevosVehiculosIds.length === 0) return;
+        
+        const allUsers = await UserRef.find();
+        const allVehs = await VehicleRef.find();
+        
+        const vehiculosNombres = nuevosVehiculosIds.map(vId => {
+            const v = allVehs.find(x => x._id.toString() === vId);
+            return v ? `${v.marca} ${v.modelo} (${v.placas || 'S/P'})` : 'Desconocido';
+        }).join(', ') || 'Ninguno';
+
+        let encargado = '';
+        if (Array.isArray(actividad.asignadoANombre)) {
+            encargado = actividad.asignadoANombre.join(', ');
+        } else if (typeof actividad.asignadoANombre === 'string') {
+            encargado = actividad.asignadoANombre;
+        } else {
+            encargado = 'Alguien del equipo';
+        }
+
+        const msgFlotilla = `🚗 *SOLICITUD DE VEHÍCULO (CRM)* 🚗\nHola, se acaba de asignar un vehículo para una tarea operativa.\n\n👤 **Asignado a:** ${encargado}\n🚙 **Vehículo(s):** ${vehiculosNombres}\n📝 **Tarea:** ${actividad.descripcion || 'Tarea Interna'}\n\n🔧 _Favor de realizar el préstamo formal (entrega de llaves) en el módulo de Tracking._`;
+
+        const administradoras = allUsers.filter(u => {
+            const name = (u.nombre + ' ' + (u.apellido || '')).toLowerCase();
+            return name.includes('jaqueline') || name.includes('isabel');
+        });
+
+        for (const admin of administradoras) {
+            if (admin.telefono) {
+                if (typeof waLog !== 'undefined' && waLog.add) {
+                    waLog.add(`Enviando notificación de flotilla a: ${admin.nombre}`);
+                }
+                try {
+                    await sendWhatsAppMessage(admin.telefono, msgFlotilla);
+                } catch(e) {
+                    console.error('Error enviando WA a flotilla:', e);
+                }
+            }
+        }
+    } catch(e) {
+        console.error('Error en notificarFlotilla:', e);
+    }
+}
+
 app.post('/api/actividades', async (req, res) => {
     try {
         const data = req.body;
@@ -1397,6 +1442,12 @@ app.post('/api/actividades', async (req, res) => {
                 waLog.add(`❌ CRITICAL ERROR notificaciones: ${e.message}`);
             }
         }
+        
+        // Notificar a flotilla si se asignaron vehículos
+        if (data.vehiculosAsignados && data.vehiculosAsignados.length > 0) {
+            await notificarFlotilla(data, data.vehiculosAsignados);
+        }
+
         }); // fin setImmediate
         // --- FIN NOTIFICACIONES ---
     } catch(err) { res.status(500).json({error: err.message}); }
@@ -1451,6 +1502,14 @@ app.put('/api/actividades/:id', async (req, res) => {
                 }
             }
         }
+        
+        const nuevosAgregados = newVehiculos.filter(v => !oldVehiculos.includes(v));
+        if (nuevosAgregados.length > 0) {
+            setImmediate(() => {
+                notificarFlotilla(data, nuevosAgregados);
+            });
+        }
+
         res.json({ message: 'Actividad actualizada con éxito', data: updatedAct });
     } catch(err) { res.status(500).json({ error: err.message }); }
 });
