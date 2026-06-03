@@ -2805,7 +2805,8 @@ const waMessageHandler = async message => {
                     console.error("Error finalizando avance WA:", e);
                     await reply(`❌ Error al guardar el avance. Consulta al administrador.`);
                 }
-                await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                // Al terminar, si hay otro pendiente en cola, mostrarlo:
+                setTimeout(async () => { await resolveSession(effectiveFrom, altFrom, reply); }, 1200);
             };
 
             if (message.hasMedia) {
@@ -2824,16 +2825,22 @@ const waMessageHandler = async message => {
                         });
                         const saved = await archivo.save();
                         
-                        s.ctx.fotos = s.ctx.fotos || [];
-                        s.ctx.fotos.push(`/api/archivos/${saved._id}`);
-                        await setSession(effectiveFrom, s);
+                        // 🛠️ FIX: Guardado Atómico ($push) para evitar Condición de Carrera cuando mandan 5 fotos juntas
+                        const updatedSession = await WaSession.findOneAndUpdate(
+                            { chatId: effectiveFrom },
+                            { $push: { "ctx.fotos": `/api/archivos/${saved._id}` }, $set: { updatedAt: new Date() } },
+                            { new: true, returnDocument: 'after' }
+                        );
                         
-                        if (s.ctx.fotos.length >= 5) {
+                        s.ctx = updatedSession.ctx || s.ctx; // Sincronizar estado en memoria
+                        
+                        const numFotos = (s.ctx.fotos || []).length;
+                        if (numFotos >= 5) {
                             await reply(`✅ Límite de 5 fotos alcanzado. Procesando avance...`);
                             await finishAvanceLocal();
                         } else {
                             // acknowledge receipt silently or minimally
-                            waLog.add(`✅ Foto recibida de WA para avance. (${s.ctx.fotos.length}/5)`);
+                            waLog.add(`✅ Foto recibida de WA para avance. (${numFotos}/5)`);
                         }
                     } else {
                         await reply(`⚠️ Por favor envía una imagen válida, o escribe "listo" para terminar.`);
@@ -3235,11 +3242,24 @@ const waMessageHandler = async message => {
                 }
             };
 
-            if (b === 'aceptar' || b === 'acepto' || b === '1' || b === 'si' || b === 'sí') {
-                await notifyJonathan(`✅ *CONFIRMACIÓN DE TAREA*\n\n*${nombreTrabajador}* ha *ACEPTADO* la siguiente tarea:\n\n📋 "${tareaDesc}"`);
-                await reply(`✅ ¡Órale! Confirmado tu participación. ¡Mucho éxito en la tarea!`);
-                setTimeout(async () => { await resolveSession(effectiveFrom, altFrom, reply); }, 1200);
-                return;
+            const isAvance = b.includes('avance') || b.includes('reporte') || b.includes('progreso') || b.includes('ya terminé') || b.includes('ya acabe');
+
+            if (b === 'aceptar' || b === 'acepto' || b === '1' || b === 'si' || b === 'sí' || isAvance) {
+                await notifyJonathan(`✅ *CONFIRMACIÓN DE TAREA*\n\n*${nombreTrabajador}* ha *ACEPTADO* la siguiente tarea${isAvance ? ' (Implícitamente al reportar avance)' : ''}:\n\n📋 "${tareaDesc}"`);
+                
+                if (isAvance) {
+                    await reply(`✅ Confirmé tu tarea automáticamente.\n\n🔄 Abriendo el reporte de avance...`);
+                    // Se le cambia a IDLE manualmente preservando la cola para que el reporte funcione de inmediato
+                    await WaSession.findOneAndUpdate({ chatId: effectiveFrom }, { state: 'IDLE', ctx: {} });
+                    if (altFrom) await WaSession.findOneAndUpdate({ chatId: altFrom }, { state: 'IDLE', ctx: {} });
+                    // Reinyectamos el mensaje para que entre directo al flujo de avance
+                    setTimeout(() => { waMessageHandler(message); }, 500);
+                    return;
+                } else {
+                    await reply(`✅ ¡Órale! Confirmado tu participación. ¡Mucho éxito en la tarea!`);
+                    setTimeout(async () => { await resolveSession(effectiveFrom, altFrom, reply); }, 1200);
+                    return;
+                }
             } else if (b === 'rechazar' || b === 'rechazo' || b === '2' || b === 'no') {
                 await notifyJonathan(`❌ *TAREA RECHAZADA*\n\n*${nombreTrabajador}* ha *RECHAZADO* la siguiente tarea:\n\n📋 "${tareaDesc}"\n\nSe requiere reasignación.`);
                 await reply(`❌ Enterado, declinación registrada. El administrador ha sido notificado.`);
