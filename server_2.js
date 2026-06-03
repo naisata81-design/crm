@@ -2210,6 +2210,38 @@ const waMessageHandler = async message => {
             }
         };
 
+        // =======================================================
+        // 🛑 INTERCEPTOR DEL BOT AVANZADO (CEREBRO)
+        // =======================================================
+        try {
+            const BOT_URL = process.env.BOT_ADVANCED_URL || 'http://localhost:4000';
+            const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
+            
+            if (typeof fetch !== 'undefined') {
+                const botResponse = await fetch(`${BOT_URL}/api/bot/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'x-api-token': SECRET },
+                    body: JSON.stringify({
+                        from: resolvedFrom,
+                        body: Body,
+                        isGroup: message.isGroupMsg || false
+                    })
+                });
+                
+                if (botResponse.ok) {
+                    const botData = await botResponse.json();
+                    if (botData.handled) {
+                        waLog.add(`🤖 [Cerebro] se hizo cargo del mensaje de ${resolvedFrom}`);
+                        if (botData.reply) await reply(botData.reply);
+                        return; // 🛑 Detiene la ejecución. El bot viejo es ignorado.
+                    }
+                }
+            }
+        } catch (botErr) {
+            // Falla silenciosa: Si el bot nuevo está apagado, seguimos con el bot viejo
+        }
+        // =======================================================
+
         const text = Body.trim().toLowerCase();
 
         // Cargar sesión desde MongoDB usando el chatId resuelto (no el LID crudo)
