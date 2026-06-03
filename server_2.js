@@ -1758,7 +1758,9 @@ const WaSessionSchema = new mongoose.Schema({
     chatId: { type: String, unique: true },
     state: { type: String, default: 'IDLE' },
     ctx: { type: Object, default: {} },
-    updatedAt: { type: Date, default: Date.now, expires: 86400 } // TTL 24h
+    pendingQueue: { type: Array, default: [] }, // Cola de pendientes del sistema
+    expiresAt: { type: Date, default: null },   // Expiración instantánea (sin depender del TTL de Mongo)
+    updatedAt: { type: Date, default: Date.now, expires: 86400 } // TTL 24h físico
 }, { collection: 'wa_bot_sessions' });
 const WaSession = mongoose.model('WaSession', WaSessionSchema);
 
@@ -1766,17 +1768,76 @@ const WaSession = mongoose.model('WaSession', WaSessionSchema);
 async function getSession(chatId) {
     try {
         const s = await WaSession.findOne({ chatId }).lean();
-        return s || { state: 'IDLE', ctx: {} };
-    } catch(e) { return { state: 'IDLE', ctx: {} }; }
+        if (!s) return { state: 'IDLE', ctx: {}, pendingQueue: [] };
+        // Validación instantánea de expiración (no dependemos del TTL lento de Mongo)
+        if (s.expiresAt && new Date() > new Date(s.expiresAt)) {
+            await WaSession.findOneAndUpdate({ chatId }, { state: 'IDLE', ctx: {}, pendingQueue: [], expiresAt: null });
+            return { state: 'IDLE', ctx: {}, pendingQueue: [] };
+        }
+        return { state: s.state || 'IDLE', ctx: s.ctx || {}, pendingQueue: s.pendingQueue || [] };
+    } catch(e) { return { state: 'IDLE', ctx: {}, pendingQueue: [] }; }
 }
+
 async function setSession(chatId, data) {
     try {
         await WaSession.findOneAndUpdate(
             { chatId },
-            { state: data.state, ctx: data.ctx || {}, updatedAt: new Date() },
+            { state: data.state, ctx: data.ctx || {}, pendingQueue: data.pendingQueue || [], expiresAt: data.expiresAt || null, updatedAt: new Date() },
             { upsert: true, returnDocument: 'after' }
         );
     } catch(e) { waLog.add(`⚠️ Error guardando sesión: ${e.message?.substring(0,60)}`); }
+}
+
+// Encola un pendiente del SISTEMA sin sobreescribir la sesión activa del usuario.
+// Solo debe usarse para estados iniciados por el sistema (WAITING_VEHICLE_CONFIRM, WAITING_TASK_CONFIRM).
+async function enqueueSession(chatId, newItem) {
+    try {
+        const current = await getSession(chatId);
+        const SYSTEM_STATES = ['WAITING_VEHICLE_CONFIRM', 'WAITING_TASK_CONFIRM'];
+        if (current.state === 'IDLE') {
+            // No hay nada activo: activar directamente
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+            await setSession(chatId, { state: newItem.state, ctx: newItem.ctx, pendingQueue: [], expiresAt });
+        } else if (SYSTEM_STATES.includes(current.state)) {
+            // Hay un pendiente del sistema activo: agregar a la cola
+            const queue = current.pendingQueue || [];
+            const alreadyQueued = queue.some(q => q.state === newItem.state && JSON.stringify(q.ctx) === JSON.stringify(newItem.ctx));
+            if (!alreadyQueued) {
+                queue.push(newItem);
+                await WaSession.findOneAndUpdate({ chatId }, { pendingQueue: queue, updatedAt: new Date() });
+                waLog.add(`📥 [COLA] Encolado ${newItem.state} para ${chatId} (cola: ${queue.length})`);
+            }
+        } else {
+            // El usuario está en un flujo propio (avance, cita, etc.): agregar a la cola igualmente
+            const queue = current.pendingQueue || [];
+            queue.push(newItem);
+            await WaSession.findOneAndUpdate({ chatId }, { pendingQueue: queue, updatedAt: new Date() });
+            waLog.add(`📥 [COLA] Encolado ${newItem.state} para ${chatId} (usuario en flujo activo, queue: ${queue.length})`);
+        }
+    } catch(e) { waLog.add(`⚠️ Error encolando sesión: ${e.message?.substring(0,60)}`); }
+}
+
+// Resuelve la sesión actual y activa el siguiente pendiente de la cola (si existe).
+// Reemplaza el patrón: setSession(id, { state: 'IDLE', ctx: {} }) al finalizar un flujo del SISTEMA.
+async function resolveSession(chatId, altChatId, reply) {
+    try {
+        const current = await getSession(chatId);
+        const queue = current.pendingQueue || [];
+        if (queue.length > 0) {
+            const next = queue.shift(); // Tomar el primero de la cola
+            const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            await setSession(chatId, { state: next.state, ctx: next.ctx, pendingQueue: queue, expiresAt });
+            if (altChatId) await setSession(altChatId, { state: next.state, ctx: next.ctx, pendingQueue: queue, expiresAt });
+            waLog.add(`📤 [COLA] Activando siguiente pendiente: ${next.state} para ${chatId}`);
+            // Notificar al usuario del siguiente pendiente
+            const tipoLabel = next.state === 'WAITING_VEHICLE_CONFIRM' ? 'asignación de vehículo' : 'asignación de tarea';
+            const desc = next.ctx.tareaDesc || next.ctx.vehicleId || '';
+            if (reply) await reply(`🔔 *Tienes otro pendiente:* ${tipoLabel}\n${desc ? `📋 "${desc}"` : ''}\n\nResponde con *ACEPTAR* o *RECHAZAR*.`);
+        } else {
+            await setSession(chatId, { state: 'IDLE', ctx: {}, pendingQueue: [], expiresAt: null });
+            if (altChatId) await setSession(altChatId, { state: 'IDLE', ctx: {}, pendingQueue: [], expiresAt: null });
+        }
+    } catch(e) { waLog.add(`⚠️ Error en resolveSession: ${e.message?.substring(0,60)}`); }
 }
 
 // ── Utilidades del Bot WhatsApp ─────────────────────────────────────────
@@ -2039,9 +2100,9 @@ Responde con una de estas palabras:
             if (chatId) {
                 const altChatId = chatId.startsWith('521') ? chatId.replace('521', '52') : chatId.replace('52', '521');
                 const sessionData = { state: 'WAITING_VEHICLE_CONFIRM', ctx: { txId, vehicleId, mainApiUrl: mainApiUrl || 'https://entregables-production-b834.up.railway.app' } };
-                await setSession(chatId, sessionData);
-                await setSession(altChatId, sessionData);
-                waLog.add(`📋 Sesión WAITING_VEHICLE_CONFIRM guardada para ${chatId}`);
+                await enqueueSession(chatId, sessionData);
+                await enqueueSession(altChatId, sessionData);
+                waLog.add(`📋 Sesión/Cola WAITING_VEHICLE_CONFIRM guardada para ${chatId}`);
             }
         }
         res.json({ success: true });
@@ -3043,13 +3104,13 @@ const waMessageHandler = async message => {
                 if (telEncargado) {
                     const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Encargado)* 🚨\n\n📋 Tarea: ${s.ctx.desc}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}\n👥 Te acompañan: ${s.ctx.acompanantes.join(', ') || 'Nadie'}\n🚗 Vehículo(s): ${s.ctx.vehiculosTxt}\n🏗️ Proyecto/Cliente: ${s.ctx.proyecto || 'No vinculado'}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
                     await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado' });
-                    // Guardar sesión WAITING_TASK_CONFIRM para el encargado
+                    // Encolar WAITING_TASK_CONFIRM (sin sobreescribir sesión activa)
                     const chatIdEnc = await getChatIdFromPhone(telEncargado);
                     const altChatIdEnc = chatIdEnc.startsWith('521') ? chatIdEnc.replace('521','52') : chatIdEnc.replace('52','521');
                     const taskSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: s.ctx.encargado } };
-                    await setSession(chatIdEnc, taskSessionData);
-                    await setSession(altChatIdEnc, taskSessionData);
-                    waLog.add(`📋 Sesión WAITING_TASK_CONFIRM guardada para encargado: ${chatIdEnc}`);
+                    await enqueueSession(chatIdEnc, taskSessionData);
+                    await enqueueSession(altChatIdEnc, taskSessionData);
+                    waLog.add(`📋 [COLA] WAITING_TASK_CONFIRM encolado para encargado: ${chatIdEnc}`);
                 }
                 
                 for (let ac of s.ctx.acompanantes) {
@@ -3057,13 +3118,13 @@ const waMessageHandler = async message => {
                     if (telAc) {
                         const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Acompañante)* 🔔\n\n📋 Tarea: ${s.ctx.desc}\n👤 Encargado: ${s.ctx.encargado}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
                         await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante' });
-                        // Guardar sesión WAITING_TASK_CONFIRM para el acompañante
+                        // Encolar WAITING_TASK_CONFIRM (sin sobreescribir sesión activa)
                         const chatIdAc = await getChatIdFromPhone(telAc);
                         const altChatIdAc = chatIdAc.startsWith('521') ? chatIdAc.replace('521','52') : chatIdAc.replace('52','521');
                         const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: ac } };
-                        await setSession(chatIdAc, acSessionData);
-                        await setSession(altChatIdAc, acSessionData);
-                        waLog.add(`📋 Sesión WAITING_TASK_CONFIRM guardada para acompañante: ${chatIdAc}`);
+                        await enqueueSession(chatIdAc, acSessionData);
+                        await enqueueSession(altChatIdAc, acSessionData);
+                        waLog.add(`📋 [COLA] WAITING_TASK_CONFIRM encolado para acompañante: ${chatIdAc}`);
                     }
                 }
                 
@@ -3091,18 +3152,18 @@ const waMessageHandler = async message => {
                         body: JSON.stringify({ firma: 'whatsapp-confirmation' })
                     });
                     if (confirmRes.ok) {
-                        await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                        await resolveSession(effectiveFrom, altFrom, reply);
                         return reply(`✅ *VEHÍCULO ACEPTADO*\n\n¡Perfecto! La asignación quedó confirmada. Ya puedes disponer del vehículo.\n\n🚗 ¡Buen viaje y maneja con precaución!`);
                     } else {
                         const errData = await confirmRes.json().catch(() => ({}));
                         waLog.add(`⚠️ Confirm HTTP ${confirmRes.status}: ${JSON.stringify(errData).substring(0,80)}`);
-                        await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                        await resolveSession(effectiveFrom, altFrom, null);
                         return reply(`⚠️ No se pudo confirmar: ${errData.error || 'La asignación ya no es válida'}. Se ha cancelado el proceso actual.`);
                     }
                 } catch(e) {
                     const cause = e.cause ? ` | causa: ${e.cause.message || e.cause}` : '';
                     waLog.addError(`Confirmando vehiculo via WA (txId=${s.ctx.txId} url=${s.ctx.mainApiUrl})`, new Error(e.message + cause));
-                    await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                    await resolveSession(effectiveFrom, altFrom, null);
                     return reply(`❌ Error de conexión al confirmar. Intenta desde la app o contacta al administrador.`);
                 }
             } else if (b === '2' || b === 'rechazar' || b === 'rechazo' || b === 'no') {
@@ -3122,7 +3183,7 @@ const waMessageHandler = async message => {
                     const cause = e.cause ? ` | causa: ${e.cause.message || e.cause}` : '';
                     waLog.addError(`Rechazando vehiculo via WA (txId=${s.ctx.txId} url=${s.ctx.mainApiUrl})`, new Error(e.message + cause));
                 }
-                await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
+                await resolveSession(effectiveFrom, altFrom, reply);
                 return reply(`❌ *ASIGNACIÓN RECHAZADA*\n\nHas rechazado la asignación del vehículo. El administrador ha sido notificado.`);
             } else {
                 return reply(`⚠️ Respuesta no reconocida.\n\nEscribe *ACEPTAR* para confirmar la recepción o *RECHAZAR* para declinar. Si deseas salir de esto, escribe *CANCELAR*.`);
@@ -3149,14 +3210,12 @@ const waMessageHandler = async message => {
             };
 
             if (b === 'aceptar' || b === 'acepto' || b === '1' || b === 'si' || b === 'sí') {
-                await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
-                await setSession(altFrom, { state: 'IDLE', ctx: {} });
                 await notifyJonathan(`✅ *CONFIRMACIÓN DE TAREA*\n\n*${nombreTrabajador}* ha *ACEPTADO* la siguiente tarea:\n\n📋 "${tareaDesc}"`);
+                await resolveSession(effectiveFrom, altFrom, reply);
                 return reply(`✅ ¡Órale! Confirmado tu participación. ¡Mucho éxito en la tarea!`);
             } else if (b === 'rechazar' || b === 'rechazo' || b === '2' || b === 'no') {
-                await setSession(effectiveFrom, { state: 'IDLE', ctx: {} });
-                await setSession(altFrom, { state: 'IDLE', ctx: {} });
                 await notifyJonathan(`❌ *TAREA RECHAZADA*\n\n*${nombreTrabajador}* ha *RECHAZADO* la siguiente tarea:\n\n📋 "${tareaDesc}"\n\nSe requiere reasignación.`);
+                await resolveSession(effectiveFrom, altFrom, reply);
                 return reply(`❌ Enterado, declinación registrada. El administrador ha sido notificado.`);
             } else {
                 return reply(`⚠️ No entendí eso. Responde con *ACEPTAR* para confirmar o *RECHAZAR* si no puedes. Escribe *CANCELAR* para salir.`);
