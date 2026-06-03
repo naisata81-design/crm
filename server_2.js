@@ -2006,8 +2006,33 @@ Responde con una de estas palabras:
                 }
             }
 
-            // --- Enviar mensaje de texto ---
-            await sendWhatsAppMessage(u.telefono, msg);
+            // --- Enviar mensaje de texto (Humanizado si está disponible) ---
+            let finalMsg = msg;
+            try {
+                const BOT_URL = process.env.BOT_ADVANCED_URL || 'https://boot-production-5efa.up.railway.app';
+                const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
+                if (typeof fetch !== 'undefined') {
+                    const humanResponse = await fetch(`${BOT_URL}/api/bot/humanize`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'x-api-token': SECRET,
+                            'Bypass-Tunnel-Reminder': 'true'
+                        },
+                        body: JSON.stringify({ texto: msg, tipo: 'asignacion_vehiculo' })
+                    });
+                    if (humanResponse.ok) {
+                        const humanData = await humanResponse.json();
+                        if (humanData.humanizado) {
+                            finalMsg = humanData.humanizado;
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error("Error contactando Cerebro para humanizar:", err.message);
+            }
+
+            await sendWhatsAppMessage(u.telefono, finalMsg);
 
             // --- Guardar sesión para respuesta ---
             const chatId = await getChatIdFromPhone(u.telefono);
@@ -2242,42 +2267,6 @@ const waMessageHandler = async message => {
         // =======================================================
         // 🛑 INTERCEPTOR DEL BOT AVANZADO (CEREBRO)
         // =======================================================
-        try {
-            const BOT_URL = process.env.BOT_ADVANCED_URL || 'https://boot-production-5efa.up.railway.app';
-            const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
-            
-            if (typeof fetch !== 'undefined') {
-                const botResponse = await fetch(`${BOT_URL}/api/bot/analyze`, {
-                    method: 'POST',
-                    headers: { 
-                        'Content-Type': 'application/json', 
-                        'x-api-token': SECRET,
-                        'Bypass-Tunnel-Reminder': 'true'
-                    },
-                    body: JSON.stringify({
-                        from: resolvedFrom,
-                        body: Body,
-                        isGroup: message.isGroupMsg || false
-                    })
-                });
-                
-                if (botResponse.ok) {
-                    const botData = await botResponse.json();
-                    if (botData.handled) {
-                        waLog.add(`🤖 [Cerebro] se hizo cargo del mensaje de ${resolvedFrom}`);
-                        if (botData.reply) await reply(botData.reply);
-                        return; // 🛑 Detiene la ejecución. El bot viejo es ignorado.
-                    }
-                }
-            }
-        } catch (botErr) {
-            // Falla silenciosa: Si el bot nuevo está apagado, seguimos con el bot viejo
-        }
-        // =======================================================
-
-        const text = Body.trim().toLowerCase();
-
-        // Cargar sesión desde MongoDB usando el chatId resuelto (no el LID crudo)
         const effectiveFrom = resolvedFrom;
         const altFrom = effectiveFrom.startsWith('521') ? effectiveFrom.replace('521', '52') : effectiveFrom.replace(/^52/, '521');
         
@@ -2290,6 +2279,44 @@ const waMessageHandler = async message => {
             await setSession(effectiveFrom, s);
             await setSession(altFrom, { state: 'IDLE', ctx: {} });
         }
+
+        // SOLO interceptar con el bot de IA si no estamos en medio de un flujo interactivo
+        if (s.state === 'IDLE') {
+            try {
+                const BOT_URL = process.env.BOT_ADVANCED_URL || 'https://boot-production-5efa.up.railway.app';
+                const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
+                
+                if (typeof fetch !== 'undefined') {
+                    const botResponse = await fetch(`${BOT_URL}/api/bot/analyze`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json', 
+                            'x-api-token': SECRET,
+                            'Bypass-Tunnel-Reminder': 'true'
+                        },
+                        body: JSON.stringify({
+                            from: resolvedFrom,
+                            body: Body,
+                            isGroup: message.isGroupMsg || false
+                        })
+                    });
+                    
+                    if (botResponse.ok) {
+                        const botData = await botResponse.json();
+                        if (botData.handled) {
+                            waLog.add(`🤖 [Cerebro] se hizo cargo del mensaje de ${resolvedFrom}`);
+                            if (botData.reply) await reply(botData.reply);
+                            return; // 🛑 Detiene la ejecución. El bot viejo es ignorado.
+                        }
+                    }
+                }
+            } catch (botErr) {
+                // Falla silenciosa: Si el bot nuevo está apagado, seguimos con el bot viejo
+            }
+        }
+        // =======================================================
+
+        const text = Body.trim().toLowerCase();
         
         // Cancelación Global (más flexible)
         if (text.includes('cancelar') || text === 'cancela' || text === 'salir' || text === 'reiniciar' || text.includes('abortar')) {
@@ -2312,8 +2339,8 @@ const waMessageHandler = async message => {
                     }
                     if (!invalid && tx.vehicleId) {
                         const veh = await VehicleRef.findById(tx.vehicleId);
-                        if (!veh || veh.estado !== 'Prestado') {
-                            invalid = true; // El vehículo ya no está prestado, fue devuelto
+                        if (!veh || (veh.estado !== 'Prestado' && veh.estado !== 'Pendiente de Confirmación')) {
+                            invalid = true; // El vehículo ya no está prestado ni pendiente
                         }
                     }
                 }
