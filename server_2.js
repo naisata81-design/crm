@@ -425,6 +425,28 @@ async function getNextFolioNumber() {
 
 // --- API Routes ---
 
+// ==========================================
+// PUENTE DE COMUNICACIÓN CON SERVER_BOT.JS
+// ==========================================
+app.post('/api/bridge/receive', (req, res) => {
+    const token = req.headers['x-api-token'];
+    // Validar token de seguridad (debe coincidir con el del bot)
+    const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
+    
+    if (token !== SECRET) {
+        return res.status(401).json({ error: 'Acceso denegado al CRM: Token inválido' });
+    }
+    
+    const data = req.body;
+    console.log(`\n[CRM] 🤖 Notificación entrante del Bot Avanzado:`, data);
+    
+    // Aquí el CRM procesará la información que manda el bot (guardar historial, actualizar base de datos, etc)
+    // ...
+
+    res.json({ status: 'success', message: 'CRM recibió los datos del bot correctamente' });
+});
+// ==========================================
+
 app.get('/api/health', (req, res) => {
     res.json({ status: 'OK', message: 'CRM Server is running' });
 });
