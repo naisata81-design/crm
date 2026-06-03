@@ -195,7 +195,7 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // MongoDB Connection
-const MONGODB_URI = 'mongodb+srv://naisata:Hola2025@naisata.kwletg6.mongodb.net/naisata_db?retryWrites=true&w=majority&appName=naisata';
+const MONGODB_URI = 'mongodb://mongo:mJiHJrpYpovNfMvBBzfwiKpoBjYcPZLg@acela.proxy.rlwy.net:27029/naisata_db';
 
 mongoose.connect(MONGODB_URI, {
     serverSelectionTimeoutMS: 30000,
