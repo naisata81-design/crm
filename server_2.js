@@ -2220,7 +2220,11 @@ const waMessageHandler = async message => {
             if (typeof fetch !== 'undefined') {
                 const botResponse = await fetch(`${BOT_URL}/api/bot/analyze`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'x-api-token': SECRET },
+                    headers: { 
+                        'Content-Type': 'application/json', 
+                        'x-api-token': SECRET,
+                        'Bypass-Tunnel-Reminder': 'true'
+                    },
                     body: JSON.stringify({
                         from: resolvedFrom,
                         body: Body,
