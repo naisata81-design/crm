@@ -2214,7 +2214,7 @@ const waMessageHandler = async message => {
         // 🛑 INTERCEPTOR DEL BOT AVANZADO (CEREBRO)
         // =======================================================
         try {
-            const BOT_URL = process.env.BOT_ADVANCED_URL || 'http://localhost:4000';
+            const BOT_URL = process.env.BOT_ADVANCED_URL || 'https://wise-tools-pull.loca.lt';
             const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
             
             if (typeof fetch !== 'undefined') {
