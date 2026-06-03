@@ -2788,6 +2788,16 @@ const waMessageHandler = async message => {
                             act.porcentajeAvance = s.ctx.pctTarea;
                             act.avanceReportado = true;
                             act.estado = s.ctx.pctTarea >= 100 ? 'Completada' : 'En Progreso';
+                            
+                            // Guardar explícitamente el avance y las fotos en la Tarea
+                            if (!act.avances) act.avances = [];
+                            act.avances.push({
+                                empleado: empName,
+                                porcentaje: s.ctx.pctTarea || 0,
+                                comentario: s.ctx.comentario,
+                                fotos: s.ctx.fotos || []
+                            });
+                            
                             if (s.ctx.proyectoId === 'IND') {
                                 if (!act.comentarios) act.comentarios = [];
                                 act.comentarios.push(`[${new Date().toLocaleDateString('es-MX', {timeZone: 'America/Mexico_City'})}] ${empName} (${s.ctx.pctTarea}%): ${s.ctx.comentario}`);
