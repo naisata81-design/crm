@@ -94,11 +94,40 @@ let waClient = null;
 let waReady = false;
 
 // Función global para enviar mensajes
-async function sendWhatsAppMessage(to, body) {
+async function sendWhatsAppMessage(to, body, opciones = {}) {
     if (!waReady || !waClient) {
         waLog.add('⚠️ Intentó enviar mensaje pero WhatsApp no está listo');
         throw new Error('WhatsApp no está listo');
     }
+
+    // =========================================================
+    // HUMANIZADOR: Pasar el mensaje por el Cerebro para darle
+    // lenguaje fluido y natural antes de enviarlo al cliente
+    // =========================================================
+    let bodyFinal = body;
+    if (opciones.tipo) { // solo humanizar si se indica el tipo de mensaje
+        try {
+            const BOT_URL = process.env.BOT_ADVANCED_URL || 'https://boot-production-5efa.up.railway.app';
+            const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
+            const hRes = await fetch(`${BOT_URL}/api/bot/humanize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-api-token': SECRET, 'Bypass-Tunnel-Reminder': 'true' },
+                body: JSON.stringify({ texto: body, tipo: opciones.tipo })
+            });
+            if (hRes.ok) {
+                const hData = await hRes.json();
+                if (hData.humanizado) {
+                    bodyFinal = hData.humanizado;
+                    waLog.add(`✨ Mensaje humanizado (tipo: ${opciones.tipo})`);
+                }
+            }
+        } catch (hErr) {
+            // Falla silenciosa: si el bot nuevo está caído, usamos el texto original
+            waLog.add(`⚠️ Humanizador no disponible, enviando texto original.`);
+        }
+    }
+    // =========================================================
+
     try {
         // Limpiar el número (quitar espacios, guiones, etc)
         let cleanPhone = to.replace(/\D/g, '');
@@ -129,7 +158,7 @@ async function sendWhatsAppMessage(to, body) {
 
             // Promise.race para evitar que await waClient.sendMessage cuelgue el hilo permanentemente si Chrome está bloqueado
             await Promise.race([
-                waClient.sendMessage(chatId, body),
+                waClient.sendMessage(chatId, bodyFinal),
                 new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout de WhatsApp Web (15s)')), 15000))
             ]);
             waLog.add(`✅ Notificación enviada a ${chatId}`);
@@ -1265,7 +1294,7 @@ async function notificarFlotilla(actividad, nuevosVehiculosIds) {
                     waLog.add(`Enviando notificación de flotilla a: ${admin.nombre}`);
                 }
                 try {
-                    await sendWhatsAppMessage(admin.telefono, msgFlotilla);
+                    await sendWhatsAppMessage(admin.telefono, msgFlotilla, { tipo: 'flotilla' });
                 } catch(e) {
                     console.error('Error enviando WA a flotilla:', e);
                 }
@@ -1445,7 +1474,7 @@ app.post('/api/actividades', async (req, res) => {
                 }
                 if (telEncargado) {
                     const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Tú eres el Encargado)* 🚨\n\n${mensajeBase}\n\n👥 Te acompañan: ${acompanantesTxt}`;
-                    try { await sendWhatsAppMessage(telEncargado, msgEncargado); } catch(e) { console.error('Error WA encargado:', e); }
+                    try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado' }); } catch(e) { console.error('Error WA encargado:', e); }
                 }
             }
 
@@ -1456,7 +1485,7 @@ app.post('/api/actividades', async (req, res) => {
                 }
                 if (telAc) {
                     const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Vas como Acompañante)* 🔔\n\n👤 Encargado principal: ${encargadosTxt || 'Ninguno'}\n\n${mensajeBase}`;
-                    try { await sendWhatsAppMessage(telAc, msgAc); } catch(e) { console.error('Error WA acompañante:', e); }
+                    try { await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante' }); } catch(e) { console.error('Error WA acompañante:', e); }
                 }
             }
 
@@ -2986,14 +3015,14 @@ const waMessageHandler = async message => {
                 const telEncargado = findPhone(s.ctx.encargado);
                 if (telEncargado) {
                     const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Encargado)* 🚨\n\n📋 Tarea: ${s.ctx.desc}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}\n👥 Te acompañan: ${s.ctx.acompanantes.join(', ') || 'Nadie'}\n🚗 Vehículo(s): ${s.ctx.vehiculosTxt}\n🏗️ Proyecto/Cliente: ${s.ctx.proyecto || 'No vinculado'}`;
-                    await sendWhatsAppMessage(telEncargado, msgEncargado);
+                    await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'confirmacion_vehiculo' });
                 }
                 
                 for (let ac of s.ctx.acompanantes) {
                     const telAc = findPhone(ac);
                     if (telAc) {
                         const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Acompañante)* 🔔\n\n📋 Tarea: ${s.ctx.desc}\n👤 Encargado: ${s.ctx.encargado}\n📅 Fecha: ${s.ctx.dateStr}\n🕒 Horario: ${s.ctx.timeStr} a ${s.ctx.timeEndStr || 'No definido'}`;
-                        await sendWhatsAppMessage(telAc, msgAc);
+                        await sendWhatsAppMessage(telAc, msgAc, { tipo: 'confirmacion_vehiculo_acompanante' });
                     }
                 }
                 
@@ -3140,7 +3169,7 @@ setInterval(async () => {
                 const tel = findPhone(participante);
                 if (tel) {
                     const msg = `⏰ *RECORDATORIO DE ${ev.tipo.toUpperCase()}*\n\nHola ${participante}, te recordamos que tienes programado: *${ev.titulo}*.\n\n🕒 Inicia a las: ${timeStr}\n📝 Detalles: ${ev.descripcion}\n\nPor favor, prepárate con anticipación.`;
-                    await sendWhatsAppMessage(tel, msg).catch(e => console.error("Error enviando recordatorio WA:", e));
+                    await sendWhatsAppMessage(tel, msg, { tipo: 'recordatorio' }).catch(e => console.error("Error enviando recordatorio WA:", e));
                 }
             }
             
