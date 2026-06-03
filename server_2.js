@@ -294,7 +294,9 @@ const CRMCotizacionSchema = new mongoose.Schema({
     productosSugeridos: [{
         cantidad: Number,
         numeroParte: String,
-        marca: String
+        marca: String,
+        descripcion: String,
+        costo: Number
     }],
     fechaCreacion: { type: Date, default: Date.now },
     fechaSeguimiento: Date,
