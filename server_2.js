@@ -1728,6 +1728,37 @@ async function setSession(chatId, data) {
     } catch(e) { waLog.add(`⚠️ Error guardando sesión: ${e.message?.substring(0,60)}`); }
 }
 
+// ── Utilidades del Bot WhatsApp ─────────────────────────────────────────
+// 1.1 Respuestas variables (anti-robot)
+const waRnd = arr => arr[Math.floor(Math.random() * arr.length)];
+const WA_FRASES = {
+    confirmado: ['✅ ¡Listo! Quedó registrado.','👍 Perfecto, guardado sin problema.','✅ Anotado. Todo en orden.','💪 Listo, queda en el sistema.'],
+    avance: ['✅ ¡Avance reportado! El panel ya muestra la actualización.','💪 ¡Buen trabajo! Avance guardado correctamente.','✅ Listo. Tu reporte quedó en el historial del proyecto.','👍 Perfecto, avance registrado.'],
+    error: ['No entendí ese mensaje 🤔\nEscribe *"ayuda"* para ver las opciones.','Hmm, no caché eso. 🤔\nEscribe *"menu"* para ver qué puedo hacer.','No estoy seguro de qué necesitas.\nEscribe *"hola"* para ver las opciones.'],
+    tarea: ['🛠️ Claro, vamos a crear la tarea.','Perfecto, asignemos la tarea. 🛠️','Con gusto. Creemos la actividad.'],
+    evento: ['📅 Claro, agendemos.','Perfecto, vamos con eso. 📋','Con gusto lo agendo.']
+};
+
+// Barra de progreso visual
+const waFormatBarra = pct => {
+    const p = Math.max(0, Math.min(100, pct||0));
+    return '█'.repeat(Math.round(p/10)) + '░'.repeat(10-Math.round(p/10)) + ` ${p}%`;
+};
+
+// 3.1 Detección de perfil de usuario por teléfono
+const WA_ADMIN_KEYWORDS = ['jacqueline','jaqueline','isabel','jacky'];
+async function getUserProfile(resolvedId) {
+    try {
+        const phone = resolvedId.replace('@c.us','').replace(/\D/g,'').slice(-10);
+        const users = await UserRef.find();
+        const u = users.find(x => x.telefono && x.telefono.replace(/\D/g,'').slice(-10) === phone);
+        if (!u) return { nombre: null, esAdmin: false };
+        const esAdmin = WA_ADMIN_KEYWORDS.some(k => (u.nombre||'').toLowerCase().includes(k));
+        return { nombre: u.nombre, apellido: u.apellido||'', esAdmin };
+    } catch(e) { return { nombre: null, esAdmin: false }; }
+}
+// ────────────────────────────────────────────────────────────────────────
+
 // ==========================================
 // REGISTRO INTERNO: LID → chatId real
 // Proceso aislado que SOLO resuelve el identificador LID de WhatsApp
@@ -2212,42 +2243,242 @@ const waMessageHandler = async message => {
         }
 
         if (s.state === 'IDLE') {
-            const esLevantamiento = text.includes('levantamiento');
-            const esCita = text.includes('cita') || text.includes('junta') || text.includes('reunion') || text.includes('reunión');
-            const esTarea = text.includes('tarea') || text.includes('actividad') || text.includes('asignar');
-            const esAvance = text.includes('avance') || text.includes('reportar');
+            // ── 3.1 Perfil de usuario ───────────────────────────────────
+            if (!s.ctx.perfil) { s.ctx.perfil = await getUserProfile(effectiveFrom); await setSession(effectiveFrom, s); }
+            const perfil = s.ctx.perfil || {};
+            const nombreUsr = perfil.nombre || null;
+            const esAdmin = perfil.esAdmin || false;
+
+            // ── 1.3 NLP Ampliado ────────────────────────────────────────
             const esEnterado = text === 'enterado' || text === 'enterada' || text.includes('enterado');
-            
+            const esAvance = text.includes('avance') || text.includes('reportar') || text.includes('reporte') ||
+                text.includes('ya terminé') || text.includes('ya acabe') || text.includes('ya acabé') ||
+                text.includes('ya termine') || text.includes('progreso') || text.includes('cuanto llevo') || text.includes('cuánto llevo');
+            const esLevantamiento = text.includes('levantamiento');
+            const esCita = text.includes('cita') || text.includes('junta') || text.includes('reunion') ||
+                text.includes('reunión') || text.includes('visita') || text.includes('llamada');
+            const esTarea = text.includes('tarea') || text.includes('actividad') || text.includes('asignar') ||
+                text.includes('programar') || text.includes('ponle') || text.includes('manda a') ||
+                text.includes('le toca') || text.includes('necesito que');
+
+            // ── 3.4 Comandos rápidos ────────────────────────────────────
+            const esMisTareas = text === 'tareas' || text.includes('mis tareas') || text.includes('mis actividades') ||
+                text.includes('qué tengo hoy') || text.includes('que tengo hoy') || text.includes('mi agenda') || text.includes('qué hago hoy');
+            const esVerProyecto = text === 'proyectos' ||
+                (text.includes('proyecto') && (text.includes('cómo va') || text.includes('como va') || text.includes('avance') || text.includes('estado')));
+            const esBuscarCot = (text.includes('cotización') || text.includes('cotizacion') || text.includes('hay algo de') || text.includes('busca')) && text.length > 4;
+            const esVentas = text === 'ventas' || text.includes('resumen del mes') ||
+                (text.includes('cómo vamos') && !text.includes('proyecto')) || (text.includes('como vamos') && !text.includes('proyecto'));
+            const esEquipo = text === 'equipo' || text.includes('quién está libre') || text.includes('quien esta libre') ||
+                text.includes('disponible esta semana') || text.includes('carga del equipo');
+            const esAyuda = text === 'ayuda' || text === 'menu' || text === 'menú' || text === 'hola' ||
+                text === 'hi' || text === 'inicio' || text === 'help' || text === 'ola';
+
             if (esEnterado) {
-                await reply(`✅ *Confirmado*. He registrado que estás enterado de tus asignaciones.\n\nRecuerda que para reportar tu progreso puedes escribir la palabra *"avance"*.`);
+                const sal = nombreUsr ? `, ${nombreUsr}` : '';
+                await reply(`✅ *Confirmado${sal}.* Registrado que estás enterado.\n\nEscribe *"mis tareas"* para ver tu agenda de hoy.`);
                 return;
+
+            } else if (esMisTareas) {
+                // ── 2.1 Mis tareas del día ──────────────────────────────
+                try {
+                    const hoyMx = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Mexico_City'}));
+                    const yy=hoyMx.getFullYear(), mo=String(hoyMx.getMonth()+1).padStart(2,'0'), dd=String(hoyMx.getDate()).padStart(2,'0');
+                    const dI=new Date(`${yy}-${mo}-${dd}T00:00:00.000Z`), dF=new Date(`${yy}-${mo}-${dd}T23:59:59.999Z`);
+                    let tareas = [];
+                    if (nombreUsr) {
+                        const nom = nombreUsr.split(' ')[0];
+                        tareas = await CRMActividad.find({ fechaVencimiento:{$gte:dI,$lte:dF}, estado:{$ne:'Completada'},
+                            $or:[{asignadoANombre:{$regex:nom,$options:'i'}},{cuadrillaNombres:{$regex:nom,$options:'i'}}]
+                        }).sort({horaInicio:1});
+                    } else {
+                        tareas = await CRMActividad.find({fechaVencimiento:{$gte:dI,$lte:dF},estado:{$ne:'Completada'}}).sort({horaInicio:1}).limit(8);
+                    }
+                    const hoyStr = hoyMx.toLocaleDateString('es-MX',{timeZone:'America/Mexico_City',weekday:'long',day:'numeric',month:'long'});
+                    if (tareas.length === 0) {
+                        await reply(`📅 *${hoyStr}*\n\n${nombreUsr?`Sin tareas asignadas para hoy, ${nombreUsr}. 🎉`:'No hay tareas para hoy. 🎉'}\n\n¿Quieres crear una nueva tarea?`);
+                        return;
+                    }
+                    let msg = `📅 *Agenda — ${hoyStr}:*\n\n`;
+                    for (let i=0; i<tareas.length; i++) {
+                        const t = tareas[i];
+                        const hora = t.horaInicio ? `${t.horaInicio}${t.horaFin?'-'+t.horaFin:''}` : 'Sin hora';
+                        const pct = t.porcentajeAvance>0 ? ` (${t.porcentajeAvance}%)` : '';
+                        msg += `${i+1}️⃣ 🕒 ${hora} — *${t.descripcion}*${pct}\n`;
+                        if (t.proyectoId) msg += `   🏗️ ${t.proyectoId}\n`;
+                        if (t.vehiculosAsignados && t.vehiculosAsignados.length>0) {
+                            const vehs = await VehicleRef.find({_id:{$in:t.vehiculosAsignados}}).select('marca modelo');
+                            if (vehs.length>0) msg += `   🚗 ${vehs.map(v=>`${v.marca||''} ${v.modelo}`).join(', ')}\n`;
+                        }
+                    }
+                    msg += `\nEscribe *"avance"* para reportar progreso.`;
+                    await reply(msg);
+                } catch(e) { waLog.addError('mis-tareas',e); await reply('Error consultando tareas. Intenta de nuevo.'); }
+                return;
+
+            } else if (esVerProyecto) {
+                // ── 2.3 Estado de proyectos ─────────────────────────────
+                try {
+                    const proys = await CRMProyecto.find({estado:{$in:['Activo','Pausado']}}).sort({fechaInicio:-1}).limit(10);
+                    if (proys.length===0) { await reply('No hay proyectos activos en este momento.'); return; }
+                    s.ctx.proyListQuery = proys.map((p,i)=>({num:i+1,id:p._id.toString(),folio:p.folio,nombre:p.nombre,pct:p.porcentajeAvance||0}));
+                    s.state = 'WAITING_QUERY_PROYECTO';
+                    await setSession(effectiveFrom, s);
+                    const lista = s.ctx.proyListQuery.map(p=>`${p.num}. [${p.folio||'S/F'}] ${p.nombre}\n   ${waFormatBarra(p.pct)}`).join('\n\n');
+                    await reply(`🏗️ *Proyectos Activos:*\n\n${lista}\n\n¿De cuál quieres el detalle? (Escribe el número)`);
+                } catch(e) { waLog.addError('ver-proyectos',e); await reply('Error consultando proyectos.'); }
+                return;
+
+            } else if (esBuscarCot) {
+                // ── 2.4 Buscar cotización ───────────────────────────────
+                s.state = 'WAITING_BUSCAR_COT';
+                await setSession(effectiveFrom, s);
+                await reply(`🔍 ¿Qué cotización buscas?\nEscribe el nombre del cliente o el folio (ej: "García" o "C47")`);
+                return;
+
+            } else if (esVentas && esAdmin) {
+                try {
+                    const ahora=new Date(), ini=new Date(ahora.getFullYear(),ahora.getMonth(),1);
+                    const [gan,act,per] = await Promise.all([
+                        CRMCotizacion.find({estado:'Ganada',fechaCreacion:{$gte:ini}}),
+                        CRMCotizacion.find({estado:{$in:['En Seguimiento','Cotizando','Neutral']}}),
+                        CRMCotizacion.find({estado:{$in:['Perdida','Perdido']},fechaCreacion:{$gte:ini}})
+                    ]);
+                    const tG=gan.reduce((a,c)=>a+(c.total||0),0), tA=act.reduce((a,c)=>a+(c.total||0),0), tP=per.reduce((a,c)=>a+(c.total||0),0);
+                    const mes=ahora.toLocaleDateString('es-MX',{month:'long',year:'numeric'});
+                    let msg=`📈 *Ventas — ${mes}:*\n\n✅ Ganadas: ${gan.length} — $${tG.toLocaleString('es-MX')}\n🔄 En proceso: ${act.length} — $${tA.toLocaleString('es-MX')} potencial\n❌ Perdidas: ${per.length} — $${tP.toLocaleString('es-MX')}`;
+                    if (act.length>0) { const top=[...act].sort((a,b)=>(b.total||0)-(a.total||0))[0]; msg+=`\n\n🏆 Mayor oportunidad:\n${top.folio||'S/F'} — ${top.clienteNombre} ($${(top.total||0).toLocaleString('es-MX')})`; }
+                    await reply(msg);
+                } catch(e) { await reply('Error consultando ventas.'); }
+                return;
+
+            } else if (esEquipo && esAdmin) {
+                try {
+                    const hoyE=new Date(new Date().toLocaleString('en-US',{timeZone:'America/Mexico_City'}));
+                    const lun=new Date(hoyE); lun.setDate(hoyE.getDate()-((hoyE.getDay()||7)-1)); lun.setHours(0,0,0,0);
+                    const dom=new Date(lun); dom.setDate(lun.getDate()+6); dom.setHours(23,59,59,999);
+                    const tarSem=await CRMActividad.find({fechaVencimiento:{$gte:lun,$lte:dom},estado:{$ne:'Completada'}});
+                    const usrs=await UserRef.find().select('nombre').sort({nombre:1});
+                    let msg=`👷 *Equipo esta semana:*\n\n`;
+                    usrs.forEach(u=>{
+                        const cnt=tarSem.filter(t=>(t.asignadoANombre||'').toLowerCase().includes((u.nombre||'').toLowerCase())||(t.cuadrillaNombres||[]).some(n=>(n||'').toLowerCase().includes((u.nombre||'').toLowerCase()))).length;
+                        const ico=cnt===0?'🟢':cnt>=4?'🔴':'🟡';
+                        msg+=`${ico} ${u.nombre}: ${cnt} tarea${cnt!==1?'s':''}\n`;
+                    });
+                    await reply(msg);
+                } catch(e) { await reply('Error consultando equipo.'); }
+                return;
+
             } else if (esAvance) {
-                const proyectosActivos = await CRMProyecto.find({ estado: { $in: ['Activo', 'Pausado'] } }).sort({ fechaInicio: -1 });
-                let proyList = [];
-                let pNum = 1;
-                proyList.push({ num: pNum++, folio: 'IND', nombre: 'Tareas Independientes (Sin Proyecto)', id: 'IND' });
-                proyectosActivos.forEach(p => { proyList.push({ num: pNum++, folio: p.folio, nombre: p.nombre, id: p._id.toString() }); });
+                const proyectosActivos = await CRMProyecto.find({estado:{$in:['Activo','Pausado']}}).sort({fechaInicio:-1});
+                let proyList = [], pNum = 1;
+                proyList.push({num:pNum++,folio:'IND',nombre:'Tareas Independientes (Sin Proyecto)',id:'IND'});
+                proyectosActivos.forEach(p=>{proyList.push({num:pNum++,folio:p.folio,nombre:p.nombre,id:p._id.toString()});});
                 s.ctx.proyList = proyList;
-                
-                let proysTxt = proyList.map(p => `${p.num}. [${p.folio || 'S/F'}] ${p.nombre}`).join('\n');
-                
                 s.state = 'WAITING_AVANCE_PROYECTO';
                 await setSession(effectiveFrom, s);
-                await reply(`📊 *REPORTAR AVANCE*\n\n${proysTxt}\n\n¿A qué *PROYECTO* deseas reportarle avance?\n(Escribe el número)`);
+                await reply(`📊 *¿De qué proyecto vas a reportar?*\n\n${proyList.map(p=>`${p.num}. [${p.folio||'S/F'}] ${p.nombre}`).join('\n')}\n\n(Escribe el número)`);
+
             } else if (esLevantamiento || esCita) {
                 s.ctx.type = esLevantamiento ? 'Levantamiento' : 'Junta';
                 s.ctx.isEvento = true;
                 s.state = 'WAITING_TAREA_DESC';
                 await setSession(effectiveFrom, s);
-                await reply(`📅 Claro, vamos a agendar tu ${s.ctx.type}.\n\n¿Cuál es la descripción, el cliente o el asunto principal?`);
+                // 1.1 Respuesta variable
+                await reply(`${waRnd(WA_FRASES.evento)} Vamos a agendar el ${s.ctx.type}.\n\n¿Cuál es la descripción o el asunto principal?`);
+
             } else if (esTarea) {
                 s.ctx.isEvento = false;
                 s.state = 'WAITING_TAREA_DESC';
                 await setSession(effectiveFrom, s);
-                await reply(`🛠️ Vamos a asignar una *Nueva Tarea*.\n\n¿Cuál es la descripción o nombre de la actividad?`);
+                // 1.1 Respuesta variable
+                await reply(`${waRnd(WA_FRASES.tarea)}\n\n¿Cuál es la descripción de la actividad?`);
+
+            } else if (esAyuda) {
+                // ── 3.2 Menú contextual inteligente ────────────────────
+                const saludos = ['¡Hola','¡Qué tal','¡Buenas','¡Hey'];
+                const sal = nombreUsr ? ` ${nombreUsr}!` : '!';
+                let menu = `${waRnd(saludos)}${sal} Soy NAIS, tu asistente del CRM.\n\n*¿Qué puedo hacer por ti?*\n\n`;
+                menu += `📅 *"mis tareas"* — Tu agenda de hoy\n`;
+                menu += `📊 *"avance"* — Reportar progreso\n`;
+                menu += `🏗️ *"proyectos"* — Estado de proyectos activos\n`;
+                menu += `🔍 *"busca [cliente]"* — Buscar cotización\n`;
+                if (esAdmin) {
+                    menu += `📈 *"ventas"* — Resumen del mes\n`;
+                    menu += `👷 *"equipo"* — Carga de trabajo semanal\n`;
+                }
+                menu += `📋 *"levantamiento"* — Agendar visita\n`;
+                menu += `🛠️ *"tarea"* — Asignar tarea al equipo`;
+                // 3.3 Alertas contextuales
+                try {
+                    const hoyCtx=new Date(new Date().toLocaleString('en-US',{timeZone:'America/Mexico_City'}));
+                    const yC=hoyCtx.getFullYear(),mC=String(hoyCtx.getMonth()+1).padStart(2,'0'),dC=String(hoyCtx.getDate()).padStart(2,'0');
+                    const cotsHoy=await CRMCotizacion.find({fechaSeguimiento:{$gte:new Date(`${yC}-${mC}-${dC}T00:00:00.000Z`),$lte:new Date(`${yC}-${mC}-${dC}T23:59:59.999Z`)}});
+                    if (cotsHoy.length>0 && esAdmin) menu=`🔔 *${cotsHoy.length} seguimiento${cotsHoy.length>1?'s':''} pendiente${cotsHoy.length>1?'s':''} hoy.*\n\n`+menu;
+                } catch(_) {}
+                await reply(menu);
+
             } else {
-                await reply("🤖 ¡Hola! Soy NAIS desde tu CRM.\n\nPuedo ayudarte a:\n- Agendar *juntas*, *citas* o *levantamientos*\n- Asignar *tareas* al equipo\n- *Reportar avance* de un proyecto\n\n¿Qué deseas hacer?");
+                // 1.1 Respuesta variable fallback
+                await reply(waRnd(WA_FRASES.error));
             }
+        } else if (s.state === 'WAITING_QUERY_PROYECTO') {
+            // ── 2.3 Detalle del proyecto seleccionado ──────────────────
+            const numQ = parseInt(text.trim());
+            const pQ = (s.ctx.proyListQuery||[]).find(x=>x.num===numQ);
+            if (!pQ) { await reply(`⚠️ Número no válido. Escribe un número de la lista.`); return; }
+            try {
+                const proj = await CRMProyecto.findById(pQ.id);
+                if (!proj) { await setSession(effectiveFrom,{state:'IDLE',ctx:s.ctx}); await reply('Proyecto no encontrado.'); return; }
+                const [tPend,tComp] = await Promise.all([
+                    CRMActividad.find({proyectoId:pQ.id,estado:{$ne:'Completada'}}),
+                    CRMActividad.find({proyectoId:pQ.id,estado:'Completada'})
+                ]);
+                let msg = `🏗️ *${proj.folio||'S/F'} — ${proj.nombre}*\n\n`;
+                msg += `📈 ${waFormatBarra(proj.porcentajeAvance||0)}\n`;
+                msg += `📋 ${proj.estado} | 👤 ${proj.clienteNombre||'N/A'}\n`;
+                msg += `✅ Completadas: ${tComp.length} | ⏳ Pendientes: ${tPend.length}\n`;
+                if (tPend.length>0) {
+                    msg+=`\n*Tareas pendientes:*\n`;
+                    tPend.slice(0,3).forEach((t,i)=>{msg+=`${i+1}. ${t.descripcion}\n`;});
+                    if (tPend.length>3) msg+=`...y ${tPend.length-3} más.\n`;
+                }
+                if (proj.facturas && proj.facturas.length>0) {
+                    const tot=proj.facturas.reduce((a,f)=>a+(f.monto||0),0);
+                    msg+=`\n💰 Facturado: $${tot.toLocaleString('es-MX')}`;
+                }
+                // 3.3 Memoria: guardar contexto del proyecto
+                s.ctx.lastProyectoId = pQ.id;
+                s.ctx.lastProyectoNombre = proj.nombre;
+                await setSession(effectiveFrom,{state:'IDLE',ctx:s.ctx});
+                await reply(msg);
+            } catch(e) { waLog.addError('query-proyecto',e); await setSession(effectiveFrom,{state:'IDLE',ctx:s.ctx}); await reply('Error cargando el proyecto.'); }
+
+        } else if (s.state === 'WAITING_BUSCAR_COT') {
+            // ── 2.4 Buscar cotización en BD ─────────────────────────────
+            const termino = Body.trim();
+            try {
+                const esFolio = /^C\d+$/i.test(termino.trim());
+                const cots = esFolio
+                    ? await CRMCotizacion.find({folio:{$regex:termino,$options:'i'}}).limit(5)
+                    : await CRMCotizacion.find({clienteNombre:{$regex:termino,$options:'i'}}).sort({fechaCreacion:-1}).limit(5);
+                if (cots.length===0) {
+                    await setSession(effectiveFrom,{state:'IDLE',ctx:s.ctx});
+                    await reply(`No encontré cotizaciones para "${termino}".\n\nEscribe *"busca [nombre]"* para intentar de nuevo.`);
+                    return;
+                }
+                const EMOJ={Ganada:'✅',Perdida:'❌',Neutral:'🔵','En Seguimiento':'🟡',Cotizando:'🟠',Cerrada:'⚫'};
+                let msg=`🔍 *${cots.length} cotización${cots.length>1?'es':''}:*\n\n`;
+                cots.forEach(c=>{
+                    const tot=c.total?`$${c.total.toLocaleString('es-MX')}`:'Sin monto';
+                    msg+=`${EMOJ[c.estado]||'📋'} *${c.folio||'S/F'}* — ${c.clienteNombre}\n   ${c.estado} | ${tot}\n\n`;
+                });
+                // 3.3 Memoria: guardar última búsqueda
+                s.ctx.lastBusqueda = termino;
+                await setSession(effectiveFrom,{state:'IDLE',ctx:s.ctx});
+                await reply(msg);
+            } catch(e) { waLog.addError('buscar-cot',e); await setSession(effectiveFrom,{state:'IDLE',ctx:s.ctx}); await reply('Error buscando cotizaciones.'); }
+
         } else if (s.state === 'WAITING_AVANCE_PROYECTO') {
             const num = parseInt(text.trim());
             const proy = (s.ctx.proyList || []).find(p => p.num === num);
@@ -2367,9 +2598,9 @@ const waMessageHandler = async message => {
                     }
                     
                     if (s.ctx.proyectoId === 'IND') {
-                        await reply(`✅ *AVANCE REPORTADO EXITOSAMENTE*\n\n📈 Tarea Independiente: ${s.ctx.pctTarea}%\n📝 ${s.ctx.comentario}\n📸 Fotos: ${(s.ctx.fotos || []).length}\n\nEl panel operativo ha sido actualizado.`);
+                        await reply(`${waRnd(WA_FRASES.avance)}\n\n📈 *Tarea independiente — ${s.ctx.pctTarea}%*\n📝 _${s.ctx.comentario}_\n📸 Fotos: ${(s.ctx.fotos || []).length}\n\nQueda registrado en el sistema. ✅`);
                     } else {
-                        await reply(`✅ *AVANCE REPORTADO EXITOSAMENTE*\n\n🏗️ Proyecto: ${s.ctx.proyecto}\n📈 Tarea: ${s.ctx.pctTarea}% | Proyecto: ${s.ctx.pctProy}%\n📝 ${s.ctx.comentario}\n📸 Fotos: ${(s.ctx.fotos || []).length}\n\nEl panel operativo ha sido actualizado.`);
+                        await reply(`${waRnd(WA_FRASES.avance)}\n\n🏗️ *${s.ctx.proyecto}*\n📈 Tarea: ${s.ctx.pctTarea}% | Proyecto: ${waFormatBarra(s.ctx.pctProy||0)}\n📝 _${s.ctx.comentario}_\n📸 Fotos: ${(s.ctx.fotos || []).length}\n\nEl panel operativo ha sido actualizado. ✅`);
                     }
                 } catch(e) {
                     console.error("Error finalizando avance WA:", e);
@@ -2667,7 +2898,7 @@ const waMessageHandler = async message => {
                         vehiculosAsignados: s.ctx.vehiculosIds || []
                     });
                     await nEvento.save();
-                    await reply(`✅ *${s.ctx.type.toUpperCase()} AGENDADO EXITOSAMENTE*\n\n📋 ${s.ctx.desc}\n👤 Encargado: ${s.ctx.encargado}\n👥 Acompañantes: ${s.ctx.acompanantes.join(', ') || 'Ninguno'}\n🚗 Vehículos: ${s.ctx.vehiculosTxt}\n🏗️ Proyecto: ${s.ctx.proyecto || 'Ninguno'}\n📅 ${s.ctx.dateStr}\n🕒 ${s.ctx.timeStr} - ${s.ctx.timeEndStr || 'Sin hora fin'}\n\nEnviando notificaciones al personal...`);
+                    await reply(`${waRnd(WA_FRASES.confirmado)} Tu ${s.ctx.type} quedó agendado:\n\n📋 "${s.ctx.desc}"\n👤 Encargado: *${s.ctx.encargado}*\n👥 Acompañantes: ${s.ctx.acompanantes.join(', ') || 'Ninguno'}\n🚗 ${s.ctx.vehiculosTxt || 'Sin vehículo'}\n🏗️ ${s.ctx.proyecto || 'Sin proyecto'}\n📅 ${s.ctx.dateStr} · 🕒 ${s.ctx.timeStr}-${s.ctx.timeEndStr||'?'}\n\nAvisando al personal... 📲`);
                 } else {
                     // Guardar como Tarea (CRMActividad)
                     const nTarea = new CRMActividad({
@@ -2683,7 +2914,7 @@ const waMessageHandler = async message => {
                         tipoDestino: s.ctx.proyecto ? 'Proyecto vinculado' : 'Asignación vía WhatsApp'
                     });
                     await nTarea.save();
-                    await reply(`✅ *TAREA CREADA EXITOSAMENTE*\n\n📋 ${s.ctx.desc}\n👤 Encargado: ${s.ctx.encargado}\n👥 Acompañantes: ${s.ctx.acompanantes.join(', ') || 'Ninguno'}\n🚗 Vehículos: ${s.ctx.vehiculosTxt}\n🏗️ Proyecto: ${s.ctx.proyecto || 'Ninguno'}\n📅 ${s.ctx.dateStr}\n🕒 ${s.ctx.timeStr} - ${s.ctx.timeEndStr || 'Sin hora fin'}\n\nEnviando notificaciones al personal...`);
+                    await reply(`${waRnd(WA_FRASES.confirmado)} La tarea quedó lista:\n\n📋 "${s.ctx.desc}"\n👤 Encargado: *${s.ctx.encargado}*\n👥 Acompañantes: ${s.ctx.acompanantes.join(', ') || 'Ninguno'}\n🚗 ${s.ctx.vehiculosTxt || 'Sin vehículo'}\n🏗️ ${s.ctx.proyecto || 'Sin proyecto'}\n📅 ${s.ctx.dateStr} · 🕒 ${s.ctx.timeStr}-${s.ctx.timeEndStr||'?'}\n\nAvisando al personal... 📲`);
                 }
                 
                 // NOTIFICACIONES WHATSAPP
