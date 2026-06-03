@@ -2214,7 +2214,7 @@ const waMessageHandler = async message => {
         // 🛑 INTERCEPTOR DEL BOT AVANZADO (CEREBRO)
         // =======================================================
         try {
-            const BOT_URL = process.env.BOT_ADVANCED_URL || 'https://bot-naisata-crm.loca.lt';
+            const BOT_URL = process.env.BOT_ADVANCED_URL || 'https://boot-production-5efa.up.railway.app';
             const SECRET = process.env.API_SECRET_TOKEN || 'tu_token_secreto_muy_seguro_123';
             
             if (typeof fetch !== 'undefined') {
