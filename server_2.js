@@ -1479,7 +1479,7 @@ app.post('/api/actividades', async (req, res) => {
                     try {
                         const chatIdEnc = phoneToWaChatId(telEncargado);
                         const altChatIdEnc = chatIdEnc.startsWith('521') ? chatIdEnc.replace('521','52') : chatIdEnc.replace(/^52/, '521');
-                        const encSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: enc } };
+                        const encSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: enc, tareaId: data._id ? data._id.toString() : null, proyectoId: data.proyectoId || 'IND' } };
                         await enqueueSession(chatIdEnc, encSessionData);
                         await enqueueSession(altChatIdEnc, encSessionData);
                         waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para encargado: ${chatIdEnc}`);
@@ -1499,7 +1499,7 @@ app.post('/api/actividades', async (req, res) => {
                     try {
                         const chatIdAc = phoneToWaChatId(telAc);
                         const altChatIdAc = chatIdAc.startsWith('521') ? chatIdAc.replace('521','52') : chatIdAc.replace(/^52/, '521');
-                        const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: ac } };
+                        const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: ac, tareaId: data._id ? data._id.toString() : null, proyectoId: data.proyectoId || 'IND' } };
                         await enqueueSession(chatIdAc, acSessionData);
                         await enqueueSession(altChatIdAc, acSessionData);
                         waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para acompañante: ${chatIdAc}`);
@@ -2835,11 +2835,13 @@ const waMessageHandler = async message => {
                         s.ctx = updatedSession.ctx || s.ctx; // Sincronizar estado en memoria
                         
                         const numFotos = (s.ctx.fotos || []).length;
-                        if (numFotos >= 5) {
-                            await reply(`✅ Límite de 5 fotos alcanzado. Procesando avance...`);
+                        const msgText = (text || '').trim().toLowerCase();
+                        
+                        if (numFotos >= 5 || msgText === 'listo' || msgText === 'terminar') {
+                            await reply(`✅ Foto guardada (${numFotos}). Procesando avance...`);
                             await finishAvanceLocal();
                         } else {
-                            // acknowledge receipt silently or minimally
+                            await reply(`📸 Foto recibida (${numFotos}/5). Envía otra o escribe *"listo"*.`);
                             waLog.add(`✅ Foto recibida de WA para avance. (${numFotos}/5)`);
                         }
                     } else {
@@ -3138,7 +3140,7 @@ const waMessageHandler = async message => {
                     // Encolar WAITING_TASK_CONFIRM (sin sobreescribir sesión activa)
                     const chatIdEnc = await getChatIdFromPhone(telEncargado);
                     const altChatIdEnc = chatIdEnc.startsWith('521') ? chatIdEnc.replace('521','52') : chatIdEnc.replace('52','521');
-                    const taskSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: s.ctx.encargado } };
+                    const taskSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: s.ctx.encargado, tareaId: (nEvento || nTarea)._id.toString(), proyectoId: s.ctx.proyectoId || s.ctx.proyecto || 'IND' } };
                     await enqueueSession(chatIdEnc, taskSessionData);
                     await enqueueSession(altChatIdEnc, taskSessionData);
                     waLog.add(`📋 [COLA] WAITING_TASK_CONFIRM encolado para encargado: ${chatIdEnc}`);
@@ -3152,7 +3154,7 @@ const waMessageHandler = async message => {
                         // Encolar WAITING_TASK_CONFIRM (sin sobreescribir sesión activa)
                         const chatIdAc = await getChatIdFromPhone(telAc);
                         const altChatIdAc = chatIdAc.startsWith('521') ? chatIdAc.replace('521','52') : chatIdAc.replace('52','521');
-                        const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: ac } };
+                        const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: s.ctx.desc, nombreTrabajador: ac, tareaId: (nEvento || nTarea)._id.toString(), proyectoId: s.ctx.proyectoId || s.ctx.proyecto || 'IND' } };
                         await enqueueSession(chatIdAc, acSessionData);
                         await enqueueSession(altChatIdAc, acSessionData);
                         waLog.add(`📋 [COLA] WAITING_TASK_CONFIRM encolado para acompañante: ${chatIdAc}`);
@@ -3248,12 +3250,10 @@ const waMessageHandler = async message => {
                 await notifyJonathan(`✅ *CONFIRMACIÓN DE TAREA*\n\n*${nombreTrabajador}* ha *ACEPTADO* la siguiente tarea${isAvance ? ' (Implícitamente al reportar avance)' : ''}:\n\n📋 "${tareaDesc}"`);
                 
                 if (isAvance) {
-                    await reply(`✅ Confirmé tu tarea automáticamente.\n\n🔄 Abriendo el reporte de avance...`);
-                    // Se le cambia a IDLE manualmente preservando la cola para que el reporte funcione de inmediato
-                    await WaSession.findOneAndUpdate({ chatId: effectiveFrom }, { state: 'IDLE', ctx: {} });
-                    if (altFrom) await WaSession.findOneAndUpdate({ chatId: altFrom }, { state: 'IDLE', ctx: {} });
-                    // Reinyectamos el mensaje para que entre directo al flujo de avance
-                    setTimeout(() => { waMessageHandler(message); }, 500);
+                    await reply(`✅ Confirmé tu tarea automáticamente.\n\n📈 ¿Qué porcentaje de avance llevas en esta tarea? (Escribe un número del 1 al 100)`);
+                    s.state = 'WAITING_AVANCE_PCT_TAREA';
+                    await WaSession.findOneAndUpdate({ chatId: effectiveFrom }, { state: s.state, ctx: s.ctx });
+                    // No reinyectamos el mensaje porque ya hicimos la pregunta para la siguiente etapa.
                     return;
                 } else {
                     await reply(`✅ ¡Órale! Confirmado tu participación. ¡Mucho éxito en la tarea!`);
