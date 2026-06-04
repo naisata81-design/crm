@@ -2687,8 +2687,10 @@ const waMessageHandler = async message => {
             
             let tareas;
             if (proy.id === 'IND') {
+                const allProys = await CRMProyecto.find().select('_id');
+                const allProyIds = allProys.map(p => p._id.toString());
                 tareas = await CRMActividad.find({ 
-                    $or: [ { proyectoId: null }, { proyectoId: '' }, { proyectoId: { $exists: false } }, { proyectoId: 'IND' } ],
+                    proyectoId: { $nin: allProyIds },
                     estado: { $ne: 'Completada' }
                 });
             } else {
