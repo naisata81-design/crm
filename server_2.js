@@ -1218,7 +1218,7 @@ app.get('/api/empleados/mis-tareas-hoy', async (req, res) => {
         // Enriquecer con info de vehículos y proyectos (archivos)
         const tareasEnriquecidas = await Promise.all(tareas.map(async (t) => {
             const tObj = t.toObject();
-            tObj.isEncargado = t.asignadoANombre === nombre;
+            tObj.isEncargado = (t.asignadoANombre || '').trim().toLowerCase() === (nombre || '').trim().toLowerCase();
 
             // Vehiculos
             if (t.vehiculosAsignados && t.vehiculosAsignados.length > 0) {
@@ -1690,6 +1690,33 @@ app.post('/api/actividades/:id/avance', upload.array('fotos', 5), async (req, re
         act.avanceReportado = true;
 
         await act.save();
+
+        // Si la actividad pertenece a un proyecto, sincronizar avance hacia el proyecto
+        if (act.proyectoId && act.proyectoId !== 'IND' && act.proyectoId !== 'General') {
+            const mongooseQuery = require('mongoose');
+            let proj = null;
+            if (mongooseQuery.isValidObjectId(act.proyectoId)) {
+                proj = await CRMProyecto.findById(act.proyectoId);
+            } else {
+                const folioPuro = act.proyectoId.replace('Proyecto Activo -', '').split('-').pop().trim();
+                proj = await CRMProyecto.findOne({ 
+                    $or: [{ folio: folioPuro }, { nombre: { $regex: folioPuro, $options: 'i' } }] 
+                });
+            }
+            if (proj) {
+                const pctProyecto = req.body.porcentajeProyecto ? parseInt(req.body.porcentajeProyecto, 10) : 0;
+                proj.avances.push({
+                    empleado,
+                    porcentaje: pctTarea,
+                    porcentajeProyecto: pctProyecto,
+                    comentario,
+                    fotos: fotosUrls
+                });
+                if (pctProyecto > 0) proj.porcentajeAvance = pctProyecto;
+                await proj.save();
+            }
+        }
+
         res.json({ success: true, avance: act.avances[act.avances.length - 1] });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -2818,8 +2845,17 @@ const waMessageHandler = async message => {
                     const empName = user ? `${user.nombre} ${user.apellido || ''}`.trim() : 'Trabajador WA';
                     
                     if (s.ctx.proyectoId !== 'IND') {
-                        const proj = await CRMProyecto.findById(s.ctx.proyectoId);
-                        if (!proj) throw new Error("Proyecto no encontrado");
+                        const mongooseQuery = require('mongoose');
+                        let proj = null;
+                        if (mongooseQuery.isValidObjectId(s.ctx.proyectoId)) {
+                            proj = await CRMProyecto.findById(s.ctx.proyectoId);
+                        } else {
+                            const folioPuro = s.ctx.proyectoId.replace('Proyecto Activo -', '').split('-').pop().trim();
+                            proj = await CRMProyecto.findOne({ 
+                                $or: [{ folio: folioPuro }, { nombre: { $regex: folioPuro, $options: 'i' } }] 
+                            });
+                        }
+                        if (!proj) throw new Error(`Proyecto no encontrado para ID/Folio: ${s.ctx.proyectoId}`);
                         
                         proj.avances.push({
                             empleado: empName,
