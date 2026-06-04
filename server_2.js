@@ -1657,6 +1657,14 @@ app.post('/api/actividades', async (req, res) => {
             const fechaTxt = _dFecha
                 ? `${_dFecha.toLocaleDateString('es-MX', { weekday: 'long', timeZone: 'America/Mexico_City' })} - ${_dFecha.toLocaleDateString('es-MX', { day: '2-digit', timeZone: 'America/Mexico_City' })}`
                 : 'No definida';
+
+            // ── Determinar si la tarea es FUTURA (más de 1 día) o INMEDIATA (hoy/mañana) ──
+            const hoyMx = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+            const hoyMxMs = new Date(hoyMx + 'T12:00:00.000Z').getTime();
+            const tareaMs = _dFecha ? _dFecha.getTime() : hoyMxMs;
+            const diasDiferencia = Math.round((tareaMs - hoyMxMs) / (1000 * 60 * 60 * 24));
+            const esTareaFutura = diasDiferencia > 1; // más de 1 día de distancia
+
             const mensajeBase = `📝 Tarea: ${data.descripcion}\n📅 Fecha: ${fechaTxt}\n🕒 Horario: ${data.horaInicio || 'No definido'} a ${data.horaFin || 'No definido'}\n🏗️ Proyecto: ${proyectoNombre}\n🚗 Vehículo(s): ${vehiculosNombres}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
 
             for (const enc of encargadosArr) {
@@ -1665,18 +1673,24 @@ app.post('/api/actividades', async (req, res) => {
                     waLog.add(`🔍 Buscando tel para encargado: ${enc} -> Resultado: ${telEncargado || 'NO ENCONTRADO'}`);
                 }
                 if (telEncargado) {
-                    const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Tú eres el Encargado)* 🚨\n\n${mensajeBase}\n\n👥 Te acompañan: ${acompanantesTxt}`;
-                    try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado', genero: inferirGenero(enc) }); } catch(e) { console.error('Error WA encargado:', e); }
-
-                    // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
-                    try {
-                        const chatIdEnc = phoneToWaChatId(telEncargado);
-                        const altChatIdEnc = chatIdEnc.startsWith('521') ? chatIdEnc.replace('521','52') : chatIdEnc.replace(/^52/, '521');
-                        const encSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: enc, tareaId: data._id ? data._id.toString() : null, proyectoId: data.proyectoId || 'IND' } };
-                        await enqueueSession(chatIdEnc, encSessionData);
-                        await enqueueSession(altChatIdEnc, encSessionData);
-                        waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para encargado: ${chatIdEnc}`);
-                    } catch(eQ) { console.error('Error encolando tarea encargado:', eQ); }
+                    if (esTareaFutura) {
+                        // ✉️ AVISO CORTO: solo notificar que fue agendado, sin detalles
+                        const msgAviso = `📌 *AVISO DE TAREA AGENDADA*\n\nHola *${enc}*, quedaste agendado para una tarea el *${fechaTxt}*.\n📝 ${data.descripcion || 'Tarea operativa'}\n\n_Te mando todos los detalles un día antes._ 👌`;
+                        try { await sendWhatsAppMessage(telEncargado, msgAviso, { tipo: 'aviso_tarea', genero: inferirGenero(enc) }); } catch(e) { console.error('Error WA aviso encargado:', e); }
+                    } else {
+                        // 🚨 MENSAJE COMPLETO: tarea para hoy o mañana
+                        const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Tú eres el Encargado)* 🚨\n\n${mensajeBase}\n\n👥 Te acompañan: ${acompanantesTxt}`;
+                        try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado', genero: inferirGenero(enc) }); } catch(e) { console.error('Error WA encargado:', e); }
+                        // Encolar sesión WAITING_TASK_CONFIRM solo para tareas inmediatas
+                        try {
+                            const chatIdEnc = phoneToWaChatId(telEncargado);
+                            const altChatIdEnc = chatIdEnc.startsWith('521') ? chatIdEnc.replace('521','52') : chatIdEnc.replace(/^52/, '521');
+                            const encSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: enc, tareaId: newAct._id ? newAct._id.toString() : null, proyectoId: data.proyectoId || 'IND' } };
+                            await enqueueSession(chatIdEnc, encSessionData);
+                            await enqueueSession(altChatIdEnc, encSessionData);
+                            waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para encargado: ${chatIdEnc}`);
+                        } catch(eQ) { console.error('Error encolando tarea encargado:', eQ); }
+                    }
                 }
             }
 
@@ -1686,17 +1700,23 @@ app.post('/api/actividades', async (req, res) => {
                     waLog.add(`🔍 Buscando tel para acompañante: ${ac} -> Resultado: ${telAc || 'NO ENCONTRADO'}`);
                 }
                 if (telAc) {
-                    const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Vas como Acompañante)* 🔔\n\n👤 Encargado principal: ${encargadosTxt || 'Ninguno'}\n\n${mensajeBase}`;
-                    try { await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante', genero: inferirGenero(ac) }); } catch(e) { console.error('Error WA acompañante:', e); }
-                    // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
-                    try {
-                        const chatIdAc = phoneToWaChatId(telAc);
-                        const altChatIdAc = chatIdAc.startsWith('521') ? chatIdAc.replace('521','52') : chatIdAc.replace(/^52/, '521');
-                        const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: ac, tareaId: data._id ? data._id.toString() : null, proyectoId: data.proyectoId || 'IND' } };
-                        await enqueueSession(chatIdAc, acSessionData);
-                        await enqueueSession(altChatIdAc, acSessionData);
-                        waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para acompañante: ${chatIdAc}`);
-                    } catch(eQ) { console.error('Error encolando tarea acompañante:', eQ); }
+                    if (esTareaFutura) {
+                        // ✉️ AVISO CORTO
+                        const msgAvisoAc = `📌 *AVISO DE TAREA AGENDADA*\n\nHola *${ac}*, vas a participar en una tarea el *${fechaTxt}*.\n📝 ${data.descripcion || 'Tarea operativa'}\n👤 Encargado: ${encargadosTxt}\n\n_Te mando todos los detalles un día antes._ 👌`;
+                        try { await sendWhatsAppMessage(telAc, msgAvisoAc, { tipo: 'aviso_tarea', genero: inferirGenero(ac) }); } catch(e) { console.error('Error WA aviso acompañante:', e); }
+                    } else {
+                        // 🚨 MENSAJE COMPLETO
+                        const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Vas como Acompañante)* 🔔\n\n👤 Encargado principal: ${encargadosTxt || 'Ninguno'}\n\n${mensajeBase}`;
+                        try { await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante', genero: inferirGenero(ac) }); } catch(e) { console.error('Error WA acompañante:', e); }
+                        try {
+                            const chatIdAc = phoneToWaChatId(telAc);
+                            const altChatIdAc = chatIdAc.startsWith('521') ? chatIdAc.replace('521','52') : chatIdAc.replace(/^52/, '521');
+                            const acSessionData = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: data.descripcion, nombreTrabajador: ac, tareaId: newAct._id ? newAct._id.toString() : null, proyectoId: data.proyectoId || 'IND' } };
+                            await enqueueSession(chatIdAc, acSessionData);
+                            await enqueueSession(altChatIdAc, acSessionData);
+                            waLog.add(`📋 [COLA-CRM] WAITING_TASK_CONFIRM encolado para acompañante: ${chatIdAc}`);
+                        } catch(eQ) { console.error('Error encolando tarea acompañante:', eQ); }
+                    }
                 }
             }
 
@@ -3699,14 +3719,30 @@ setInterval(async () => {
                 const esEncargado = encargadosArr.includes(persona);
                 const rolTxt = esEncargado ? '👷 *Eres el Encargado*' : '👥 *Vas como Acompañante*';
                 const encargadosTxt = encargadosArr.join(', ') || 'Sin encargado';
+                const acompanantesTxtCron = acompanantesArr.join(', ') || 'Nadie';
 
-                const msg = `🔔 *RECORDATORIO DE TAREA PARA MAÑANA*\n\nHola *${persona}*, tienes una tarea programada para mañana.\n\n${rolTxt}\n📝 Tarea: ${t.descripcion || 'Sin descripción'}\n📅 Fecha: ${fechaTxtMañana}\n🕒 Horario: ${t.horaInicio || 'No definido'} a ${t.horaFin || 'No definido'}\n👤 Encargado: ${encargadosTxt}\n🚗 Vehículo(s): ${vehiculosNombres}\n\n_Prepárate con anticipación_ ✅`;
+                // Mensaje COMPLETO de asignación con ACEPTAR/RECHAZAR (igual que si fuera hoy)
+                let msgCron;
+                if (esEncargado) {
+                    msgCron = `🚨 *TAREA PARA MAÑANA (Tú eres el Encargado)* 🚨\n\n📝 Tarea: ${t.descripcion || 'Sin descripción'}\n📅 Fecha: ${fechaTxtMañana}\n🕒 Horario: ${t.horaInicio || 'No definido'} a ${t.horaFin || 'No definido'}\n🏗️ Proyecto: ${t.proyectoId || 'Sin proyecto'}\n🚗 Vehículo(s): ${vehiculosNombres}\n👥 Te acompañan: ${acompanantesTxtCron}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
+                } else {
+                    msgCron = `🔔 *TAREA PARA MAÑANA (Vas como Acompañante)* 🔔\n\n📝 Tarea: ${t.descripcion || 'Sin descripción'}\n📅 Fecha: ${fechaTxtMañana}\n🕒 Horario: ${t.horaInicio || 'No definido'} a ${t.horaFin || 'No definido'}\n👤 Encargado: ${encargadosTxt}\n🚗 Vehículo(s): ${vehiculosNombres}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
+                }
 
                 try {
-                    await sendWhatsAppMessage(tel, msg, { tipo: 'recordatorio_tarea', genero: inferirGenero(persona) });
-                    waLog.add(`✅ [CRON] Recordatorio enviado a ${persona} (${tel}) para tarea: ${t.descripcion}`);
+                    await sendWhatsAppMessage(tel, msgCron, { tipo: esEncargado ? 'tarea_encargado' : 'tarea_acompanante', genero: inferirGenero(persona) });
+                    waLog.add(`✅ [CRON] Asignación completa enviada a ${persona} (${tel})`);
+                    // Encolar sesión WAITING_TASK_CONFIRM ahora que sí se manda la petición de confirmación
+                    try {
+                        const chatIdCron = phoneToWaChatId(tel);
+                        const altChatIdCron = chatIdCron.startsWith('521') ? chatIdCron.replace('521','52') : chatIdCron.replace(/^52/, '521');
+                        const sessionDataCron = { state: 'WAITING_TASK_CONFIRM', ctx: { tareaDesc: t.descripcion, nombreTrabajador: persona, tareaId: t._id ? t._id.toString() : null, proyectoId: t.proyectoId || 'IND' } };
+                        await enqueueSession(chatIdCron, sessionDataCron);
+                        await enqueueSession(altChatIdCron, sessionDataCron);
+                        waLog.add(`📋 [CRON] WAITING_TASK_CONFIRM encolado para ${persona}`);
+                    } catch(eQ) { console.error('Error encolando sesión cron:', eQ); }
                 } catch(e) {
-                    waLog.add(`❌ [CRON] Error enviando recordatorio a ${persona}: ${e.message}`);
+                    waLog.add(`❌ [CRON] Error enviando asignación a ${persona}: ${e.message}`);
                 }
             }
         }
