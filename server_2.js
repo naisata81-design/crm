@@ -2287,7 +2287,7 @@ const waMessageHandler = async message => {
         const From = message.from; 
         const Body = message.body;
 
-        if (!Body || !From || From.includes('@g.us') || From === 'status@broadcast') return; // ignorar grupos y estados
+        if ((!Body && !message.hasMedia) || !From || From.includes('@g.us') || From === 'status@broadcast') return; // ignorar grupos y estados (permitir fotos sin caption)
 
         // -------------------------------------------------------
         // RESOLUCIÓN DE LID → chatId real (proceso interno aislado)
@@ -2331,7 +2331,8 @@ const waMessageHandler = async message => {
         // Registrar actividad
         waLog.ultimoMensaje = new Date().toLocaleString('es-MX', {timeZone:'America/Mexico_City'});
         waLog.ultimaActividad = new Date();
-        waLog.add(`💬 Mensaje de ${From.replace('@c.us','').replace('@lid','(lid)')}: "${Body.substring(0,40)}${Body.length>40?'...':''}"`);
+        const bodyPreview = Body ? `"${Body.substring(0,40)}${Body.length>40?'...':''}"` : (message.hasMedia ? '[📸 Foto]' : '[sin texto]');
+        waLog.add(`💬 Mensaje de ${From.replace('@c.us','').replace('@lid','(lid)')}: ${bodyPreview}`);
 
         // Helper local: usa reply() que es más confiable que sendMessage()
         const reply = async (text) => {
