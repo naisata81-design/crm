@@ -1223,6 +1223,61 @@ app.get('/api/actividades/conflictos', async (req, res) => {
     } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
+// Obtener alcance de proyecto sin precios (para encargados)
+app.get('/api/alcance-proyecto/:proyectoId', async (req, res) => {
+    try {
+        const { proyectoId } = req.params;
+        
+        let orConditions = [];
+        const mongooseQuery = require('mongoose');
+        if (mongooseQuery.isValidObjectId(proyectoId)) {
+            orConditions.push({ _id: proyectoId });
+        }
+        orConditions.push({ folio: proyectoId });
+        
+        const proj = await CRMProyecto.findOne({ $or: orConditions });
+        if (!proj) return res.status(404).json({ error: 'Proyecto no encontrado' });
+        
+        if (!proj.cotizacionId) {
+            return res.status(404).json({ error: 'El proyecto no tiene cotización asociada' });
+        }
+        
+        const cot = await CRMCotizacion.findById(proj.cotizacionId);
+        if (!cot) return res.status(404).json({ error: 'Cotización original no encontrada' });
+        
+        // Redactar datos (quitar todo lo relacionado a precios)
+        const alcance = {
+            clienteNombre: cot.clienteNombre,
+            folio: cot.folio,
+            lugarEjecucion: cot.lugarEjecucion,
+            contacto: cot.contacto,
+            descripcion: cot.descripcion,
+            notas: cot.notas,
+            fechaCreacion: cot.fechaCreacion,
+            creadorNombre: cot.creadorNombre,
+            creadorTelefono: cot.creadorTelefono,
+            creadorCorreo: cot.creadorCorreo,
+            productosSugeridos: (cot.productosSugeridos || []).map(ps => ({
+                cantidad: ps.cantidad,
+                descripcion: ps.descripcion,
+                numeroParte: ps.numeroParte,
+                marca: ps.marca,
+                // Redactar costo
+            })),
+            partidas: (cot.partidas || []).map(p => ({
+                descripcion: p.descripcion,
+                cantidad: p.cantidad,
+                unidad: p.unidad,
+                // Redactar precioUnitario y total
+            }))
+        };
+        
+        res.json(alcance);
+    } catch(err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Obtener tareas de hoy para un empleado (para portal de empleados)
 app.get('/api/empleados/mis-tareas-hoy', async (req, res) => {
     try {
