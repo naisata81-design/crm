@@ -330,6 +330,7 @@ const CRMCotizacionSchema = new mongoose.Schema({
     descripcion: String,
     lugarEjecucion: String,
     contacto: String,
+    categoria: { type: String, enum: ['Electricidad', 'Voz y Datos', 'Aires Acondicionados', 'Aislamiento', 'Tablaroca'] },
     condiciones: String,
     notas: String,
     creadorNombre: String,
