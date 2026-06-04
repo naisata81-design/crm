@@ -1607,7 +1607,10 @@ app.post('/api/actividades', async (req, res) => {
                 }
             }
 
-            const fechaTxt = data.fechaVencimiento ? new Date(data.fechaVencimiento).toISOString().split('T')[0] : 'No definida';
+            const _dFecha = data.fechaVencimiento ? new Date(data.fechaVencimiento) : null;
+            const fechaTxt = _dFecha
+                ? `${_dFecha.toLocaleDateString('es-MX', { weekday: 'long', timeZone: 'America/Mexico_City' })} - ${_dFecha.toLocaleDateString('es-MX', { day: '2-digit', timeZone: 'America/Mexico_City' })}`
+                : 'No definida';
             const mensajeBase = `📝 Tarea: ${data.descripcion}\n📅 Fecha: ${fechaTxt}\n🕒 Horario: ${data.horaInicio || 'No definido'} a ${data.horaFin || 'No definido'}\n🏗️ Proyecto: ${proyectoNombre}\n🚗 Vehículo(s): ${vehiculosNombres}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
 
             for (const enc of encargadosArr) {
@@ -3567,6 +3570,108 @@ setInterval(async () => {
         console.error('Error en loop de recordatorios:', err);
     }
 }, 60000); // Revisar cada minuto
+
+// --- RECORDATORIOS AUTOMÁTICOS DE TAREAS (8:00 PM México, día anterior) ---
+let _ultimoRecordatorioTareasFecha = '';
+setInterval(async () => {
+    try {
+        if (!waReady || waStatus !== 'CONECTADO') return;
+
+        // Calcular hora actual en México
+        const ahoraISO = new Date().toLocaleString('en-CA', { timeZone: 'America/Mexico_City', hour12: false });
+        // ahoraISO tiene formato: "2026-06-04, 20:00:05"
+        const [fechaHoyMx, tiempoMx] = ahoraISO.split(', ');
+        const [horaActual, minActual] = tiempoMx.split(':').map(Number);
+
+        // Ejecutar solo entre 20:00 y 20:01 (ventana de 1 minuto) y solo 1 vez por día
+        if (horaActual !== 20 || minActual > 1) return;
+        if (_ultimoRecordatorioTareasFecha === fechaHoyMx) return;
+        _ultimoRecordatorioTareasFecha = fechaHoyMx;
+
+        waLog.add('⏰ [CRON] Iniciando envío de recordatorios de tareas para mañana...');
+
+        // Calcular rango de mañana
+        const mañana = new Date(fechaHoyMx + 'T12:00:00.000Z');
+        mañana.setDate(mañana.getDate() + 1);
+        const mañanaStr = mañana.toISOString().split('T')[0];
+        const mañanaInicio = new Date(mañanaStr + 'T00:00:00.000Z');
+        const mañanaFin    = new Date(mañanaStr + 'T23:59:59.999Z');
+
+        // Buscar tareas de mañana no completadas
+        const tareasManana = await CRMActividad.find({
+            fechaVencimiento: { $gte: mañanaInicio, $lte: mañanaFin },
+            estado: { $nin: ['Completada', 'Cancelada'] }
+        });
+
+        if (tareasManana.length === 0) {
+            waLog.add('⏰ [CRON] Sin tareas para mañana. Nada que recordar.');
+            return;
+        }
+
+        const allUsers = await UserRef.find();
+        const allVehs  = await VehicleRef.find();
+
+        const findPhoneCron = (name) => {
+            const q = name.trim().toLowerCase().replace(/\s+/g, ' ');
+            const u = allUsers.find(x => {
+                const full = `${(x.nombre||'').trim()} ${(x.apellido||'').trim()}`.trim().toLowerCase().replace(/\s+/g,' ');
+                return full === q || full.includes(q) || q.includes(full);
+            });
+            return u && u.telefono ? u.telefono : null;
+        };
+
+        // Calcular nombre del día de mañana en español
+        const diaMañana = mañana.toLocaleDateString('es-MX', { weekday: 'long', timeZone: 'America/Mexico_City' });
+        const numMañana = mañana.toLocaleDateString('es-MX', { day: '2-digit', timeZone: 'America/Mexico_City' });
+        const fechaTxtMañana = `${diaMañana} - ${numMañana}`;
+
+        const yaNotificados = new Set();
+
+        for (const t of tareasManana) {
+            const vehiculosNombres = (t.vehiculosAsignados || []).map(vId => {
+                const v = allVehs.find(x => x._id.toString() === vId);
+                return v ? v.modelo : 'Desconocido';
+            }).join(', ') || 'Ninguno';
+
+            let encargadosArr = [];
+            if (Array.isArray(t.asignadoANombre)) encargadosArr = t.asignadoANombre.filter(Boolean);
+            else if (typeof t.asignadoANombre === 'string') encargadosArr = t.asignadoANombre.split(',').map(s => s.trim()).filter(Boolean);
+
+            let acompanantesArr = [];
+            if (Array.isArray(t.cuadrillaNombres)) acompanantesArr = t.cuadrillaNombres.filter(Boolean);
+            else if (typeof t.cuadrillaNombres === 'string') acompanantesArr = t.cuadrillaNombres.split(',').map(s => s.trim()).filter(Boolean);
+
+            const todosAsignados = [...new Set([...encargadosArr, ...acompanantesArr])];
+
+            for (const persona of todosAsignados) {
+                const tel = findPhoneCron(persona);
+                if (!tel) continue;
+                const clave = `${t._id}-${tel}`;
+                if (yaNotificados.has(clave)) continue;
+                yaNotificados.add(clave);
+
+                const esEncargado = encargadosArr.includes(persona);
+                const rolTxt = esEncargado ? '👷 *Eres el Encargado*' : '👥 *Vas como Acompañante*';
+                const encargadosTxt = encargadosArr.join(', ') || 'Sin encargado';
+
+                const msg = `🔔 *RECORDATORIO DE TAREA PARA MAÑANA*\n\nHola *${persona}*, tienes una tarea programada para mañana.\n\n${rolTxt}\n📝 Tarea: ${t.descripcion || 'Sin descripción'}\n📅 Fecha: ${fechaTxtMañana}\n🕒 Horario: ${t.horaInicio || 'No definido'} a ${t.horaFin || 'No definido'}\n👤 Encargado: ${encargadosTxt}\n🚗 Vehículo(s): ${vehiculosNombres}\n\n_Prepárate con anticipación_ ✅`;
+
+                try {
+                    await sendWhatsAppMessage(tel, msg, { tipo: 'recordatorio_tarea' });
+                    waLog.add(`✅ [CRON] Recordatorio enviado a ${persona} (${tel}) para tarea: ${t.descripcion}`);
+                } catch(e) {
+                    waLog.add(`❌ [CRON] Error enviando recordatorio a ${persona}: ${e.message}`);
+                }
+            }
+        }
+
+        waLog.add(`⏰ [CRON] Recordatorios finalizados. ${yaNotificados.size} mensaje(s) enviado(s).`);
+    } catch(err) {
+        console.error('Error en cron de recordatorios de tareas:', err);
+        if (typeof waLog !== 'undefined' && waLog.add) waLog.add(`❌ [CRON] Error crítico: ${err.message}`);
+    }
+}, 60000); // Revisar cada minuto
+// --- FIN RECORDATORIOS DE TAREAS ---
 
 // Start Server
 app.listen(PORT, '0.0.0.0', () => {
