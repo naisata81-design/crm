@@ -1199,26 +1199,31 @@ app.get('/api/empleados/mis-tareas-hoy', async (req, res) => {
         const { nombre } = req.query;
         if (!nombre) return res.status(400).json({error: 'Falta nombre'});
 
-        // Rango de hoy en UTC
-        const hoy = new Date();
-        const fechaIso = hoy.toISOString().split('T')[0];
+        // Rango de hoy en zona horaria de México
+        const fechaIso = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
         const diaInicio = new Date(fechaIso + 'T00:00:00.000Z');
         const diaFin   = new Date(fechaIso + 'T23:59:59.999Z');
+
+        // Búsqueda insensible a mayúsculas
+        const nombreRegex = new RegExp(`^\\s*${nombre.trim()}\\s*$`, 'i');
 
         // Buscar actividades donde sea asignado (encargado) o esté en cuadrilla
         const tareas = await CRMActividad.find({
             fechaVencimiento: { $gte: diaInicio, $lte: diaFin },
             estado: { $ne: 'Completada' },
             $or: [
-                { asignadoANombre: nombre },
-                { cuadrillaNombres: nombre }
+                { asignadoANombre: nombreRegex },
+                { cuadrillaNombres: nombreRegex }
             ]
         });
 
         // Enriquecer con info de vehículos y proyectos (archivos)
         const tareasEnriquecidas = await Promise.all(tareas.map(async (t) => {
             const tObj = t.toObject();
-            tObj.isEncargado = (t.asignadoANombre || '').trim().toLowerCase() === (nombre || '').trim().toLowerCase();
+            
+            // Separar posibles múltiples encargados y buscar coincidencia exacta para evitar falsos positivos
+            const encargadosArr = (t.asignadoANombre || '').toLowerCase().split(',').map(s => s.trim());
+            tObj.isEncargado = encargadosArr.includes((nombre || '').trim().toLowerCase());
 
             // Vehiculos
             if (t.vehiculosAsignados && t.vehiculosAsignados.length > 0) {
