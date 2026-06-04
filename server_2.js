@@ -94,6 +94,52 @@ let waClient = null;
 let waReady = false;
 
 // Función global para enviar mensajes
+
+// ─── INFERIDOR DE GÉNERO POR NOMBRE ─────────────────────────────────────────
+const NOMBRES_FEMENINOS = new Set([
+    'sofia','sofía','maria','maría','ana','laura','gabriela','isabel','patricia',
+    'alejandra','andrea','monica','mónica','rosa','carmen','lucía','lucia',
+    'fernanda','daniela','valeria','victoria','cristina','elena','beatriz',
+    'claudia','mariana','veronica','verónica','irene','silvia','esperanza',
+    'yolanda','alicia','martha','marta','susana','adriana','rebeca','jaqueline',
+    'jacqueline','lorena','diana','paula','sara','blanca','leticia','eva',
+    'gloria','lourdes','pilar','concepcion','concepción','dolores','amparo',
+    'antonia','francisca','josefa','natalia','esther','julia','teresa','raquel',
+    'celia','consuelo','marisol','maribel','griselda','lidia','norma','karla',
+    'karina','nadia','wendy','brenda','paola','alejandrina','guadalupe','lupe',
+    'rocio','rocío','miriam','mirna','elsa','araceli','fabiola','vanessa'
+]);
+const NOMBRES_MASCULINOS = new Set([
+    'daniel','carlos','juan','jose','josé','miguel','luis','antonio','francisco',
+    'pedro','jesus','jesús','manuel','jorge','alejandro','roberto','david',
+    'eduardo','ricardo','fernando','sergio','mario','rafael','victor','víctor',
+    'alberto','oscar','óscar','hector','héctor','raul','raúl','arturo','pablo',
+    'felipe','andres','andrés','enrique','guillermo','javier','gerardo','ernesto',
+    'gabriel','rodrigo','alejandro','ivan','iván','martin','martín','omar','hugo',
+    'armando','alfredo','diego','ignacio','antonio','edgar','cesar','césar',
+    'benjamin','benjamín','samuel','santiago','adam','adan','adrián','adrian',
+    'alan','alexis','angel','ángel','benito','beto','chuy','dario','darío',
+    'efrain','efraín','emilio','erick','erik','ezequiel','fabian','fabián',
+    'fidel','frank','freddy','gilberto','gonzalo','gustavo','heberto','hilario',
+    'jaime','jonatan','jonathan','kevin','leo','leonel','lino','lucas','marco',
+    'marcos','maximiliano','memo','nahum','noe','noé','octavio','oswaldo',
+    'ramiro','rene','rené','reynaldo','roberto','rogelio','roque','ruben','rubén',
+    'salvador','simon','simón','tomas','tomás','ulises','uriel','willian','william'
+]);
+
+function inferirGenero(nombre) {
+    if (!nombre) return 'masculino'; // fallback
+    // Tomar el primer nombre si hay varios
+    const primerNombre = nombre.trim().split(/[\s,]+/)[0].toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // quitar acentos para comparar
+    if (NOMBRES_FEMENINOS.has(primerNombre)) return 'femenino';
+    if (NOMBRES_MASCULINOS.has(primerNombre)) return 'masculino';
+    // Heurística de terminación: nombres en -a tienden a ser femeninos
+    if (primerNombre.endsWith('a') && !['mia','luca'].includes(primerNombre)) return 'femenino';
+    return 'masculino'; // fallback
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 async function sendWhatsAppMessage(to, body, opciones = {}) {
     if (!waReady || !waClient) {
         waLog.add('⚠️ Intentó enviar mensaje pero WhatsApp no está listo');
@@ -112,7 +158,7 @@ async function sendWhatsAppMessage(to, body, opciones = {}) {
             const hRes = await fetch(`${BOT_URL}/api/bot/humanize`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'x-api-token': SECRET, 'Bypass-Tunnel-Reminder': 'true' },
-                body: JSON.stringify({ texto: body, tipo: opciones.tipo })
+                body: JSON.stringify({ texto: body, tipo: opciones.tipo, genero: opciones.genero || 'masculino' })
             });
             if (hRes.ok) {
                 const hData = await hRes.json();
@@ -1620,7 +1666,7 @@ app.post('/api/actividades', async (req, res) => {
                 }
                 if (telEncargado) {
                     const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Tú eres el Encargado)* 🚨\n\n${mensajeBase}\n\n👥 Te acompañan: ${acompanantesTxt}`;
-                    try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado' }); } catch(e) { console.error('Error WA encargado:', e); }
+                    try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado', genero: inferirGenero(enc) }); } catch(e) { console.error('Error WA encargado:', e); }
 
                     // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
                     try {
@@ -1641,7 +1687,7 @@ app.post('/api/actividades', async (req, res) => {
                 }
                 if (telAc) {
                     const msgAc = `🔔 *NUEVA TAREA ASIGNADA (Vas como Acompañante)* 🔔\n\n👤 Encargado principal: ${encargadosTxt || 'Ninguno'}\n\n${mensajeBase}`;
-                    try { await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante' }); } catch(e) { console.error('Error WA acompañante:', e); }
+                    try { await sendWhatsAppMessage(telAc, msgAc, { tipo: 'tarea_acompanante', genero: inferirGenero(ac) }); } catch(e) { console.error('Error WA acompañante:', e); }
                     // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
                     try {
                         const chatIdAc = phoneToWaChatId(telAc);
@@ -2290,7 +2336,7 @@ Responde con una de estas palabras:
                             'x-api-token': SECRET,
                             'Bypass-Tunnel-Reminder': 'true'
                         },
-                        body: JSON.stringify({ texto: msg, tipo: 'asignacion_vehiculo' })
+                        body: JSON.stringify({ texto: msg, tipo: 'asignacion_vehiculo', genero: inferirGenero(userName) })
                     });
                     if (humanResponse.ok) {
                         const humanData = await humanResponse.json();
@@ -3657,7 +3703,7 @@ setInterval(async () => {
                 const msg = `🔔 *RECORDATORIO DE TAREA PARA MAÑANA*\n\nHola *${persona}*, tienes una tarea programada para mañana.\n\n${rolTxt}\n📝 Tarea: ${t.descripcion || 'Sin descripción'}\n📅 Fecha: ${fechaTxtMañana}\n🕒 Horario: ${t.horaInicio || 'No definido'} a ${t.horaFin || 'No definido'}\n👤 Encargado: ${encargadosTxt}\n🚗 Vehículo(s): ${vehiculosNombres}\n\n_Prepárate con anticipación_ ✅`;
 
                 try {
-                    await sendWhatsAppMessage(tel, msg, { tipo: 'recordatorio_tarea' });
+                    await sendWhatsAppMessage(tel, msg, { tipo: 'recordatorio_tarea', genero: inferirGenero(persona) });
                     waLog.add(`✅ [CRON] Recordatorio enviado a ${persona} (${tel}) para tarea: ${t.descripcion}`);
                 } catch(e) {
                     waLog.add(`❌ [CRON] Error enviando recordatorio a ${persona}: ${e.message}`);
