@@ -1526,9 +1526,26 @@ app.post('/api/actividades', async (req, res) => {
             let proyectoNombre = 'Ninguno';
             let mediaToSend = []; // Arreglo para guardar MessageMedia a enviar
             if (data.proyectoId) {
-                const proj = await CRMProyecto.findById(data.proyectoId);
+                // FIX: el frontend guarda el FOLIO ("C523") en proyectoId, no el _id de MongoDB.
+                // findById("C523") siempre devuelve null → búsqueda dual: primero por _id, luego por folio.
+                const mongoose = require('mongoose');
+                let proj = null;
+                if (mongoose.isValidObjectId(data.proyectoId)) {
+                    proj = await CRMProyecto.findById(data.proyectoId);
+                }
+                if (!proj) {
+                    proj = await CRMProyecto.findOne({
+                        $or: [
+                            { folio: data.proyectoId },
+                            { folio: { $regex: `^${data.proyectoId.trim()}$`, $options: 'i' } }
+                        ]
+                    });
+                }
                 if (proj) {
                     proyectoNombre = `${proj.folio || 'S/F'} - ${proj.nombre}`;
+                    if (typeof waLog !== 'undefined' && waLog.add) {
+                        waLog.add(`📂 Proyecto encontrado: ${proyectoNombre} | archivos: ${(proj.archivos || []).length}`);
+                    }
                     if (proj.archivos && proj.archivos.length > 0) {
                         const DOMAIN = process.env.URL || 'https://crm-production-2af7.up.railway.app';
                         const linksStr = proj.archivos.map(a => `${DOMAIN}${a}`).join('\n');
@@ -1542,11 +1559,16 @@ app.post('/api/actividades', async (req, res) => {
                                 const crmDoc = await CRMArchivo.findById(archivoId);
                                 if (crmDoc && crmDoc.datos) {
                                     mediaToSend.push(new MessageMedia(crmDoc.contentType, crmDoc.datos, crmDoc.nombre || 'Documento'));
+                                    waLog.add(`✅ Documento preparado: ${crmDoc.nombre || archivoId}`);
                                 }
                             }
                         } catch (mediaErr) {
                             console.error('Error preparando documentos multimedia:', mediaErr);
                         }
+                    }
+                } else {
+                    if (typeof waLog !== 'undefined' && waLog.add) {
+                        waLog.add(`⚠️ Proyecto NO encontrado para proyectoId: "${data.proyectoId}". No se enviarán documentos.`);
                     }
                 }
             }
