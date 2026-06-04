@@ -1522,9 +1522,7 @@ app.post('/api/actividades', async (req, res) => {
             const acompanantesTxt = acompanantesArr.join(', ') || 'Nadie';
             const encargadosTxt = encargadosArr.join(', ') || 'Ninguno';
 
-            let proyectoLinks = '';
             let proyectoNombre = 'Ninguno';
-            let mediaToSend = []; // Arreglo para guardar MessageMedia a enviar
             if (data.proyectoId) {
                 // FIX: el frontend guarda el FOLIO ("C523") en proyectoId, no el _id de MongoDB.
                 // findById("C523") siempre devuelve null → búsqueda dual: primero por _id, luego por folio.
@@ -1544,37 +1542,17 @@ app.post('/api/actividades', async (req, res) => {
                 if (proj) {
                     proyectoNombre = `${proj.folio || 'S/F'} - ${proj.nombre}`;
                     if (typeof waLog !== 'undefined' && waLog.add) {
-                        waLog.add(`📂 Proyecto encontrado: ${proyectoNombre} | archivos: ${(proj.archivos || []).length}`);
-                    }
-                    if (proj.archivos && proj.archivos.length > 0) {
-                        const DOMAIN = process.env.URL || 'https://crm-production-2af7.up.railway.app';
-                        const linksStr = proj.archivos.map(a => `${DOMAIN}${a}`).join('\n');
-                        proyectoLinks = `\n\n📄 *Documentos del Proyecto:*\n${linksStr}`;
-                        
-                        // Preparar archivos multimedia para el encargado
-                        try {
-                            const { MessageMedia } = require('whatsapp-web.js');
-                            for (const a of proj.archivos) {
-                                const archivoId = a.split('/').pop();
-                                const crmDoc = await CRMArchivo.findById(archivoId);
-                                if (crmDoc && crmDoc.datos) {
-                                    mediaToSend.push(new MessageMedia(crmDoc.contentType, crmDoc.datos, crmDoc.nombre || 'Documento'));
-                                    waLog.add(`✅ Documento preparado: ${crmDoc.nombre || archivoId}`);
-                                }
-                            }
-                        } catch (mediaErr) {
-                            console.error('Error preparando documentos multimedia:', mediaErr);
-                        }
+                        waLog.add(`📂 Proyecto encontrado: ${proyectoNombre}`);
                     }
                 } else {
                     if (typeof waLog !== 'undefined' && waLog.add) {
-                        waLog.add(`⚠️ Proyecto NO encontrado para proyectoId: "${data.proyectoId}". No se enviarán documentos.`);
+                        waLog.add(`⚠️ Proyecto NO encontrado para proyectoId: "${data.proyectoId}".`);
                     }
                 }
             }
 
             const fechaTxt = data.fechaVencimiento ? new Date(data.fechaVencimiento).toISOString().split('T')[0] : 'No definida';
-            const mensajeBase = `📝 Tarea: ${data.descripcion}\n📅 Fecha: ${fechaTxt}\n🕒 Horario: ${data.horaInicio || 'No definido'} a ${data.horaFin || 'No definido'}\n🏗️ Proyecto: ${proyectoNombre}\n🚗 Vehículo(s): ${vehiculosNombres}${proyectoLinks}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
+            const mensajeBase = `📝 Tarea: ${data.descripcion}\n📅 Fecha: ${fechaTxt}\n🕒 Horario: ${data.horaInicio || 'No definido'} a ${data.horaFin || 'No definido'}\n🏗️ Proyecto: ${proyectoNombre}\n🚗 Vehículo(s): ${vehiculosNombres}\n\nResponde con:\n✅ *ACEPTAR* — para confirmar tu participación\n❌ *RECHAZAR* — si no puedes realizarla`;
 
             for (const enc of encargadosArr) {
                 const telEncargado = findPhone(enc);
@@ -1584,18 +1562,6 @@ app.post('/api/actividades', async (req, res) => {
                 if (telEncargado) {
                     const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Tú eres el Encargado)* 🚨\n\n${mensajeBase}\n\n👥 Te acompañan: ${acompanantesTxt}`;
                     try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado' }); } catch(e) { console.error('Error WA encargado:', e); }
-                    
-                    // Enviar documentos adjuntos al encargado
-                    if (mediaToSend && mediaToSend.length > 0) {
-                        for (const media of mediaToSend) {
-                            try {
-                                await new Promise(resolve => setTimeout(resolve, 1500)); // Pausa 1.5s
-                                await sendWhatsAppMedia(telEncargado, media, `📄 Doc. ${proyectoNombre}`);
-                            } catch (e) {
-                                console.error('Error enviando documento WA encargado:', e);
-                            }
-                        }
-                    }
 
                     // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
                     try {
