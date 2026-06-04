@@ -194,6 +194,36 @@ async function sendWhatsAppMessage(to, body, opciones = {}) {
         }
     }
 }
+
+// Función global para enviar multimedia (imágenes, pdfs)
+async function sendWhatsAppMedia(to, mediaObj, caption = '') {
+    if (!waReady || !waClient) {
+        waLog.add('⚠️ Intentó enviar multimedia pero WhatsApp no está listo');
+        throw new Error('WhatsApp no está listo');
+    }
+
+    try {
+        let cleanPhone = to.replace(/\D/g, '');
+        if (cleanPhone.length === 10) cleanPhone = `521${cleanPhone}`;
+        if (cleanPhone.length === 12 && cleanPhone.startsWith('52')) cleanPhone = `521${cleanPhone.substring(2)}`;
+        
+        let chatId = cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`;
+        if (waClient) {
+            try {
+                const registeredUser = await waClient.getNumberId(cleanPhone);
+                if (registeredUser && registeredUser._serialized) chatId = registeredUser._serialized;
+            } catch (err) {}
+
+            await Promise.race([
+                waClient.sendMessage(chatId, mediaObj, { caption }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout de WhatsApp Web (15s)')), 15000))
+            ]);
+            waLog.add(`✅ Multimedia enviada a ${chatId}`);
+        }
+    } catch (e) {
+        waLog.add(`❌ Error enviando multimedia a ${to}: ${e.message}`);
+    }
+}
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -1494,6 +1524,7 @@ app.post('/api/actividades', async (req, res) => {
 
             let proyectoLinks = '';
             let proyectoNombre = 'Ninguno';
+            let mediaToSend = []; // Arreglo para guardar MessageMedia a enviar
             if (data.proyectoId) {
                 const proj = await CRMProyecto.findById(data.proyectoId);
                 if (proj) {
@@ -1502,6 +1533,20 @@ app.post('/api/actividades', async (req, res) => {
                         const DOMAIN = process.env.URL || 'https://crm-production-2af7.up.railway.app';
                         const linksStr = proj.archivos.map(a => `${DOMAIN}${a}`).join('\n');
                         proyectoLinks = `\n\n📄 *Documentos del Proyecto:*\n${linksStr}`;
+                        
+                        // Preparar archivos multimedia para el encargado
+                        try {
+                            const { MessageMedia } = require('whatsapp-web.js');
+                            for (const a of proj.archivos) {
+                                const archivoId = a.split('/').pop();
+                                const crmDoc = await CRMArchivo.findById(archivoId);
+                                if (crmDoc && crmDoc.datos) {
+                                    mediaToSend.push(new MessageMedia(crmDoc.contentType, crmDoc.datos, crmDoc.nombre || 'Documento'));
+                                }
+                            }
+                        } catch (mediaErr) {
+                            console.error('Error preparando documentos multimedia:', mediaErr);
+                        }
                     }
                 }
             }
@@ -1517,6 +1562,19 @@ app.post('/api/actividades', async (req, res) => {
                 if (telEncargado) {
                     const msgEncargado = `🚨 *NUEVA TAREA ASIGNADA (Tú eres el Encargado)* 🚨\n\n${mensajeBase}\n\n👥 Te acompañan: ${acompanantesTxt}`;
                     try { await sendWhatsAppMessage(telEncargado, msgEncargado, { tipo: 'tarea_encargado' }); } catch(e) { console.error('Error WA encargado:', e); }
+                    
+                    // Enviar documentos adjuntos al encargado
+                    if (mediaToSend && mediaToSend.length > 0) {
+                        for (const media of mediaToSend) {
+                            try {
+                                await new Promise(resolve => setTimeout(resolve, 1500)); // Pausa 1.5s
+                                await sendWhatsAppMedia(telEncargado, media, `📄 Doc. ${proyectoNombre}`);
+                            } catch (e) {
+                                console.error('Error enviando documento WA encargado:', e);
+                            }
+                        }
+                    }
+
                     // Encolar sesión WAITING_TASK_CONFIRM para que el bot entienda su respuesta
                     try {
                         const chatIdEnc = phoneToWaChatId(telEncargado);
