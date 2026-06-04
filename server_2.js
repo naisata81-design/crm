@@ -1319,7 +1319,44 @@ app.post('/api/actividades', async (req, res) => {
             const fecha = new Date(data.fechaVencimiento).toISOString().split('T')[0];
             const diaInicio = new Date(fecha + 'T00:00:00.000Z');
             const diaFin   = new Date(fecha + 'T23:59:59.999Z');
-            const tareasDelDia = await CRMActividad.find({ fechaVencimiento: { $gte: diaInicio, $lte: diaFin } });
+
+            // Helper para convertir "HH:MM" a minutos totales
+            const toMinsLocal = h => {
+                if (!h || h === '') return null;
+                const [hh, mm] = h.split(':').map(Number);
+                return hh * 60 + mm;
+            };
+
+            // Hora actual en México (formato HH:MM)
+            const ahoraEnMexico = new Date().toLocaleTimeString('en-US', {
+                timeZone: 'America/Mexico_City',
+                hour12: false, hour: '2-digit', minute: '2-digit'
+            });
+            const fechaHoyMexico = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+            const esFechaHoy = fecha === fechaHoyMexico;
+
+            // Corrección 2: Si es HOY y no hay hora de inicio, usar la hora actual como referencia
+            if (esFechaHoy && !data.horaInicio) {
+                data.horaInicio = ahoraEnMexico;
+            }
+
+            // Corrección 3: Si es HOY y la hora de fin ya pasó, rechazar de inmediato
+            if (esFechaHoy && data.horaFin) {
+                const minutosFin = toMinsLocal(data.horaFin);
+                const minutosAhora = toMinsLocal(ahoraEnMexico);
+                if (minutosFin !== null && minutosAhora !== null && minutosFin <= minutosAhora) {
+                    return res.status(409).json({
+                        error: 'Conflicto de horario',
+                        conflictos: [`La hora de fin (${data.horaFin}) ya pasó. Son las ${ahoraEnMexico} en México. Por favor elige un horario futuro.`]
+                    });
+                }
+            }
+
+            // Corrección 1: Excluir tareas Completadas o Canceladas del chequeo de conflictos
+            const tareasDelDia = await CRMActividad.find({
+                fechaVencimiento: { $gte: diaInicio, $lte: diaFin },
+                estado: { $nin: ['Completada', 'Cancelada'] }
+            });
             const eventosDelDia = await CRMEvento.find({ fechaInicio: { $gte: diaInicio, $lte: diaFin } });
 
             const conflictos = [];
@@ -1798,9 +1835,21 @@ async function getSession(chatId) {
 
 async function setSession(chatId, data) {
     try {
+        // Si no se pasa pendingQueue explícitamente, preservar la que ya existe en DB
+        // Esto evita que los flujos (avance, tarea, etc.) borren la cola al hacer setSession({ state:'IDLE', ctx:{} })
+        let queueToSave;
+        if (data.pendingQueue !== undefined) {
+            // Se pasó explícitamente (incluyendo [] vacío): respetar ese valor
+            queueToSave = data.pendingQueue;
+        } else {
+            // No se pasó: leer la cola actual de la DB para preservarla
+            const existing = await WaSession.findOne({ chatId }).select('pendingQueue').lean();
+            queueToSave = existing?.pendingQueue || [];
+        }
+
         await WaSession.findOneAndUpdate(
             { chatId },
-            { state: data.state, ctx: data.ctx || {}, pendingQueue: data.pendingQueue || [], expiresAt: data.expiresAt || null, updatedAt: new Date() },
+            { state: data.state, ctx: data.ctx || {}, pendingQueue: queueToSave, expiresAt: data.expiresAt || null, updatedAt: new Date() },
             { upsert: true, returnDocument: 'after' }
         );
     } catch(e) { waLog.add(`⚠️ Error guardando sesión: ${e.message?.substring(0,60)}`); }
